@@ -117,6 +117,21 @@ export function previewContainerFile(connectionId: string, containerId: string, 
   return invoke<DockerFilePreview>(connectionId, 'docker/previewContainerFile', { containerId, path });
 }
 
+export function startFileDownload(connectionId: string, containerId: string, path: string, sessionId: string) {
+  return invoke<{ sessionId: string; size: number }>(connectionId, 'docker/startFileDownload', { containerId, path, sessionId });
+}
+
+export function startFileUpload(
+  connectionId: string,
+  containerId: string,
+  path: string,
+  sessionId: string,
+  size: number,
+  mode: 'overwrite' | 'append' = 'overwrite',
+) {
+  return invoke<{ sessionId: string }>(connectionId, 'docker/startFileUpload', { containerId, path, sessionId, size, mode });
+}
+
 export function getEngineDetails(connectionId: string) {
   return invoke<DockerEngineDetails>(connectionId, 'docker/getEngineDetails');
 }

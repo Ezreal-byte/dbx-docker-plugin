@@ -185,15 +185,40 @@ function decodePluginFrame(bytes) {
   return { kind: bytes[0], header, data: bytes.subarray(5 + headerLength) };
 }
 
-function encodeExecInput(sessionId, text) {
+function encodeExecInput(sessionId, payload) {
   const header = Buffer.from(JSON.stringify({ sessionId, kind: 'stdin' }));
-  const data = Buffer.from(text);
+  const data = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
   const frame = Buffer.alloc(5 + header.length + data.length);
   frame[0] = 1;
   frame.writeUInt32BE(header.length, 1);
   header.copy(frame, 5);
   data.copy(frame, 5 + header.length);
   return frame;
+}
+
+/** 收集某个 docker-exec 会话直到出现 done 帧。 */
+function waitForExecDone(sessionId, timeoutMs = 20_000) {
+  let output = '';
+  let exitCode;
+  let settled = false;
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
+  const stop = client.onBinary(({ channel, data }) => {
+    if (channel !== 'docker-exec') return;
+    const frame = decodePluginFrame(data);
+    if (frame?.header?.sessionId !== sessionId) return;
+    if (frame.kind === 1) output += frame.data.toString('utf8');
+    if (typeof frame.header.exitCode === 'number') exitCode = frame.header.exitCode;
+    if (!settled && (frame.header.status === 'done' || frame.header.status === 'error')) {
+      settled = true;
+      resolveDone();
+    }
+  });
+  const timeout = setTimeout(() => { if (!settled) { settled = true; resolveDone(); } }, timeoutMs);
+  return {
+    promise: done.finally(() => { clearTimeout(timeout); stop(); }),
+    result: () => ({ output, exitCode }),
+  };
 }
 
 function connectionPayload(id, overrides = {}) {
@@ -223,7 +248,7 @@ try {
     const result = await client.request('plugin/initialize', { host: { protocolVersions: [1] } });
     assert(result.protocolVersion === 1, `unexpected protocolVersion ${result.protocolVersion}`);
     assert(result.plugin?.id === 'io.dbx.docker', `unexpected plugin id ${result.plugin?.id}`);
-    assert(result.plugin?.version === '0.1.3', `unexpected plugin version ${result.plugin?.version}`);
+    assert(result.plugin?.version === '0.1.4', `unexpected plugin version ${result.plugin?.version}`);
     return `${result.plugin.id} ${result.plugin.version}`;
   });
 
@@ -409,13 +434,80 @@ try {
       return `${output.length} terminal bytes, done frame received`;
     });
 
-    await check('read-only connection blocks terminal', async () => {
+    await check('container file upload + download round-trip', async () => {
+      const target = '/tmp/dbx-smoke-upload.txt';
+      const payload = Buffer.from(`dbx smoke file ${Date.now()}\n${'x'.repeat(4096)}\n`);
+
+      const uploadSession = 'smoke-upload';
+      const uploadWaiter = waitForExecDone(uploadSession);
+      await client.request('docker/startFileUpload', {
+        connectionId: CONNECTION_ID,
+        containerId,
+        path: target,
+        sessionId: uploadSession,
+        size: payload.length,
+        mode: 'overwrite',
+      });
+      client.sendBinary('docker-exec', encodeExecInput(uploadSession, payload));
+      await uploadWaiter.promise;
+      const upload = uploadWaiter.result();
+      assert((upload.exitCode ?? 0) === 0, `upload exited with ${upload.exitCode}: ${upload.output}`);
+
+      const downloadSession = 'smoke-download';
+      const chunks = [];
+      let finished = false;
+      let failure = '';
+      const stopListening = client.onBinary(({ channel, data }) => {
+        if (channel !== 'docker-file') return;
+        const frame = decodePluginFrame(data);
+        if (frame?.header?.sessionId !== downloadSession) return;
+        if (frame.kind === 1) chunks.push(Buffer.from(frame.data));
+        if (frame.header.status === 'error') failure = frame.header.error || 'download failed';
+        if (frame.header.status === 'done' || frame.header.status === 'error') finished = true;
+      });
+      try {
+        const started = await client.request('docker/startFileDownload', {
+          connectionId: CONNECTION_ID,
+          containerId,
+          path: target,
+          sessionId: downloadSession,
+        });
+        assert(started.size === payload.length, `download reported size ${started.size}, expected ${payload.length}`);
+        const deadline = Date.now() + 15_000;
+        while (!finished && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+        assert(finished, 'the file download never finished');
+        assert(!failure, `download failed: ${failure}`);
+        const received = Buffer.concat(chunks);
+        assert(received.length === payload.length, `received ${received.length} of ${payload.length} bytes`);
+        assert(received.equals(payload), 'downloaded bytes differ from the uploaded bytes');
+        return `${received.length} bytes round-tripped`;
+      } finally {
+        stopListening();
+        // 清理临时文件，避免在容器里留下测试产物。
+        const cleanupSession = 'smoke-cleanup';
+        const cleanupWaiter = waitForExecDone(cleanupSession);
+        await client
+          .request('docker/startExec', {
+            connectionId: CONNECTION_ID,
+            containerId,
+            sessionId: cleanupSession,
+            command: ['/bin/sh', '-c', `rm -f ${target}`],
+            cols: 80,
+            rows: 24,
+          })
+          .catch(() => {});
+        await cleanupWaiter.promise.catch(() => {});
+      }
+    });
+
+    await check('read-only connection blocks terminal and uploads', async () => {
       const id = 'smoke-readonly';
       await client.request('connection/connect', {
         connection: connectionPayload(id, { read_only: true }),
         runtime: { host: endpoint.host, port: endpoint.port },
       });
-      let message = '';
+      let terminalMessage = '';
+      let uploadMessage = '';
       try {
         await client.request('docker/startExec', {
           connectionId: id,
@@ -426,11 +518,24 @@ try {
           rows: 24,
         });
       } catch (error) {
-        message = error.message;
+        terminalMessage = error.message;
+      }
+      try {
+        await client.request('docker/startFileUpload', {
+          connectionId: id,
+          containerId,
+          path: '/tmp/dbx-smoke-readonly.txt',
+          sessionId: 'smoke-readonly-upload',
+          size: 4,
+          mode: 'overwrite',
+        });
+      } catch (error) {
+        uploadMessage = error.message;
       }
       await client.request('connection/disconnect', { connection: connectionPayload(id) });
-      assert(message.includes('read-only'), `expected the read-only guard, got: ${message || '(no error)'}`);
-      return 'guard fired';
+      assert(terminalMessage.includes('read-only'), `expected the read-only terminal guard, got: ${terminalMessage || '(no error)'}`);
+      assert(uploadMessage.includes('read-only'), `expected the read-only upload guard, got: ${uploadMessage || '(no error)'}`);
+      return 'guards fired';
     });
   }
 

@@ -26,6 +26,16 @@ export interface ExecHeader {
   dataLen?: number;
 }
 
+// 容器文件下载帧头。
+export interface FileHeader {
+  sessionId: string;
+  path: string;
+  status?: 'running' | 'done' | 'error' | 'cancelled';
+  size: number;
+  error?: string;
+  dataLen?: number;
+}
+
 export interface DecodedFrame<T> {
   kind: number; // 0=JSON 头 1=数据块
   header: T;

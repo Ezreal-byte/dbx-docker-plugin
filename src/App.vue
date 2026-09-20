@@ -6,10 +6,12 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { currentLocale, getPlugin, type PluginEnvPayload } from './bridge';
 import { setLocale, t } from './i18n';
 import * as api from './api';
-import { initStreams, registerExportStream, registerTransferStream, startLogStream, unregisterStream, type ExportProgress } from './streams';
+import { initStreams, registerExecStream, registerExportStream, registerFileStream, registerTransferStream, startLogStream, unregisterStream, type ExportProgress } from './streams';
+import { sendExecBytes } from './exec';
 import { createDockerProgressParseState, parseDockerProgressEvent, type DockerProgressParseState } from './progress';
 import { createPendingDockerPullTask, newSessionId } from './pullTask';
 import { copyToClipboard, directoryOf, formatBytes, formatDate, savedPathKind, shortId } from './format';
+import { computeRate, formatRate, timeLabels } from './metrics';
 import { toast, toasts } from './toast';
 import type {
   DockerComposeApplyRequest,
@@ -37,7 +39,7 @@ import Icon from './components/Icon.vue';
 import Dialog from './components/Dialog.vue';
 import Popover from './components/Popover.vue';
 import Switch from './components/Switch.vue';
-import LineChart from './components/LineChart.vue';
+import MetricChart, { type MetricSeries } from './components/MetricChart.vue';
 import JsonTree from './components/JsonTree.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import ContainerTerminal from './components/ContainerTerminal.vue';
@@ -69,6 +71,8 @@ const networks = ref<DockerNetwork[]>([]);
 const listStats = ref<Record<string, DockerContainerStats>>({});
 const expandedProjects = ref(new Set<string>());
 const selectedContainerId = ref('');
+// 表格行选中：同一时刻只展示一张表，用单个 key 即可（切换资源时清空）。
+const selectedRowKey = ref('');
 const detailTab = ref<DetailTab>('overview');
 const inspect = ref<Record<string, any>>({});
 const trend = ref<TrendPoint[]>([]);
@@ -80,6 +84,20 @@ type TransferTask = DockerTransferProgress & {
   savedPath?: string;
   savedPathKind?: 'desktop' | 'web';
 };
+
+interface FileTransferTask {
+  sessionId: string;
+  name: string;
+  /** 容器内路径；下载完成后替换为本地保存路径。 */
+  path: string;
+  direction: 'download' | 'upload';
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  bytes: number;
+  total: number;
+  error?: string;
+  savedPath?: string;
+  savedPathKind?: 'desktop' | 'web';
+}
 const transfers = ref<TransferTask[]>([]);
 const cancelledTransferIds = new Set<string>();
 const transferParseStates = new Map<string, DockerProgressParseState>();
@@ -168,6 +186,12 @@ const fileEntries = ref<DockerFileEntry[]>([]);
 const filePreview = ref<DockerFilePreview>();
 const fileLoading = ref(false);
 const fileError = ref('');
+const fileSelection = ref('');
+const uploadInput = ref<HTMLInputElement>();
+const fileTransfers = ref<FileTransferTask[]>([]);
+
+/** 与后端 maxFileTransferBytes 保持一致。 */
+const MAX_FILE_TRANSFER_BYTES = 256 * 1024 * 1024;
 let listStatsTimer: number | undefined;
 let detailStatsTimer: number | undefined;
 let resourceRefreshTimer: number | undefined;
@@ -224,10 +248,11 @@ async function loadDiskUsage() {
   }
 }
 
-function openDiskUsage() {
-  diskUsageOpen.value = true;
-  void loadDiskUsage();
-}
+// Popover 的 trigger 插槽由组件自身负责 toggle：在按钮上再挂 @click 会先置 true、
+// 再被冒泡到组件的 toggle 反转回 false，表现就是「点了没反应」。因此改为监听展开状态。
+watch(diskUsageOpen, (open) => {
+  if (open) void loadDiskUsage();
+});
 
 async function runPrune(target: DockerPruneTarget, all: boolean, actionLabel: string) {
   if (isReadOnly.value) {
@@ -457,9 +482,35 @@ const visibleLogs = computed(() => {
     .filter((line) => line.toLowerCase().includes(needle))
     .join('\n');
 });
-const trendLabels = computed(() => trend.value.map((point) => new Date(point.readAt || Date.now()).toLocaleTimeString()));
-const cpuSeries = computed(() => [{ name: 'CPU', data: trend.value.map((point) => point.cpuPercent), color: '#3b82f6' }]);
-const memorySeries = computed(() => [{ name: t('memory'), data: trend.value.map((point) => point.memoryPercent), color: '#8b5cf6' }]);
+const MIB = 1024 * 1024;
+
+const monitorLabels = computed(() => timeLabels(trend.value.map((point) => point.readAt)));
+const cpuChartSeries = computed<MetricSeries[]>(() => [
+  { name: 'CPU %', color: '#3b82f6', data: trend.value.map((point) => Number((point.cpuPercent ?? 0).toFixed(2))) },
+]);
+const memoryChartSeries = computed<MetricSeries[]>(() => [
+  { name: t('memoryUsage'), color: '#8b5cf6', data: trend.value.map((point) => point.memoryUsage / MIB) },
+  { name: t('memoryLimit'), color: '#c4b5fd', data: trend.value.map((point) => point.memoryLimit / MIB) },
+]);
+const networkChartSeries = computed<MetricSeries[]>(() => [
+  { name: t('networkRx'), color: '#0ea5e9', data: computeRate(trend.value.map((point) => ({ readAt: point.readAt, value: point.networkRx }))) },
+  { name: t('networkTx'), color: '#06b6d4', data: computeRate(trend.value.map((point) => ({ readAt: point.readAt, value: point.networkTx }))) },
+]);
+const blockIoChartSeries = computed<MetricSeries[]>(() => [
+  { name: t('blockRead'), color: '#f59e0b', data: computeRate(trend.value.map((point) => ({ readAt: point.readAt, value: point.blockRead }))) },
+  { name: t('blockWrite'), color: '#ef4444', data: computeRate(trend.value.map((point) => ({ readAt: point.readAt, value: point.blockWrite }))) },
+]);
+const latestSample = computed(() => trend.value[trend.value.length - 1]);
+const latestNetworkRate = computed(() => {
+  const rx = networkChartSeries.value[0]?.data ?? [];
+  const tx = networkChartSeries.value[1]?.data ?? [];
+  return { rx: rx[rx.length - 1] ?? 0, tx: tx[tx.length - 1] ?? 0 };
+});
+const latestBlockRate = computed(() => {
+  const read = blockIoChartSeries.value[0]?.data ?? [];
+  const write = blockIoChartSeries.value[1]?.data ?? [];
+  return { read: read[read.length - 1] ?? 0, write: write[write.length - 1] ?? 0 };
+});
 const engineJson = computed(() => ({ version: engineDetails.value?.version ?? {}, info: engineDetails.value?.info ?? {} }));
 const filteredEngineJson = computed(() => {
   const text = JSON.stringify(engineJson.value, null, 2);
@@ -640,6 +691,7 @@ async function loadResource(kind = resource.value) {
 async function selectResource(kind: ResourceKind) {
   await closeDetail();
   resource.value = kind;
+  selectedRowKey.value = '';
   query.value = '';
   sortState.value = { key: 'name', direction: 'asc' };
   await loadResource(kind);
@@ -656,6 +708,9 @@ async function openDetail(container: DockerContainer) {
   selectedContainerId.value = container.id;
   detailTab.value = 'overview';
   terminalTabRequested.value = false;
+  fileSelection.value = '';
+  fileTransfers.value = [];
+  filePath.value = '/';
   inspect.value = (await api.inspectContainer(connectionId.value, container.id)) as Record<string, any>;
   trend.value = [];
   restartDetailSampling();
@@ -670,6 +725,8 @@ async function closeDetail() {
   inspect.value = {};
   fileEntries.value = [];
   filePreview.value = undefined;
+  fileSelection.value = '';
+  fileTransfers.value = [];
 }
 
 function requestConfirmation(message: string): Promise<boolean> {
@@ -1013,10 +1070,7 @@ async function saveExport(progress: ExportProgress, fileName: string, imageId: s
     const plugin = getPlugin();
     if (plugin.saveFile) {
       // 桌面宿主会弹原生保存对话框并回传绝对路径；Web 宿主只回传文件名。
-      const result = (await plugin.saveFile({ suggestedName: fileName, data: merged.buffer })) as
-        | { path?: string }
-        | null
-        | undefined;
+      const result = await plugin.saveFile({ fileName, contentType: 'application/x-tar' }, merged.buffer);
       const savedPath = typeof result?.path === 'string' ? result.path : '';
       if (savedPath) {
         const kind = savedPathKind(savedPath, fileName);
@@ -1277,6 +1331,170 @@ async function openFile(entry: DockerFileEntry) {
   }
 }
 
+// ---------- 容器文件传输 ----------
+
+function upsertFileTransfer(task: FileTransferTask) {
+  const index = fileTransfers.value.findIndex((item) => item.sessionId === task.sessionId);
+  if (index >= 0) {
+    const next = [...fileTransfers.value];
+    next[index] = { ...next[index], ...task };
+    fileTransfers.value = next;
+    return;
+  }
+  fileTransfers.value = [task, ...fileTransfers.value].slice(0, 20);
+}
+
+function patchFileTransfer(sessionId: string, patch: Partial<FileTransferTask>) {
+  fileTransfers.value = fileTransfers.value.map((item) => (item.sessionId === sessionId ? { ...item, ...patch } : item));
+}
+
+function joinContainerPath(directory: string, name: string): string {
+  return directory.endsWith('/') ? `${directory}${name}` : `${directory}/${name}`;
+}
+
+function fileTransferPercent(task: FileTransferTask): number {
+  if (!task.total) return 0;
+  return Math.min(100, (task.bytes / task.total) * 100);
+}
+
+async function downloadFile(entry: DockerFileEntry) {
+  if (!selectedContainer.value || entry.kind === 'directory') return;
+  const sessionId = newSessionId();
+  const chunks: Uint8Array[] = [];
+  upsertFileTransfer({
+    sessionId,
+    name: entry.name,
+    path: entry.path,
+    direction: 'download',
+    status: 'running',
+    bytes: 0,
+    total: entry.size,
+  });
+  registerFileStream(sessionId, (event) => {
+    if (event.chunk.length) chunks.push(event.chunk);
+    patchFileTransfer(sessionId, { bytes: event.bytesReceived, total: event.size || entry.size });
+    if (!event.done) return;
+    if (event.error) {
+      unregisterStream(sessionId);
+      patchFileTransfer(sessionId, { status: 'error', error: event.error });
+      toast(event.error, 5000);
+      return;
+    }
+    void saveDownloadedFile(sessionId, entry.name, chunks);
+  });
+  try {
+    await api.startFileDownload(connectionId.value, selectedContainer.value.id, entry.path, sessionId);
+  } catch (cause: any) {
+    unregisterStream(sessionId);
+    patchFileTransfer(sessionId, { status: 'error', error: cause?.message || String(cause) });
+    toast(cause?.message || String(cause), 5000);
+  }
+}
+
+async function saveDownloadedFile(sessionId: string, fileName: string, chunks: Uint8Array[]) {
+  unregisterStream(sessionId);
+  try {
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const plugin = getPlugin();
+    if (!plugin.saveFile) throw new Error(t('saveUnsupported'));
+    const result = await plugin.saveFile({ fileName, contentType: 'application/octet-stream' }, merged.buffer);
+    const savedPath = typeof result?.path === 'string' ? result.path : '';
+    if (!savedPath) {
+      // 用户在原生保存对话框中取消。
+      patchFileTransfer(sessionId, { status: 'cancelled' });
+      return;
+    }
+    const kind = savedPathKind(savedPath, fileName);
+    patchFileTransfer(sessionId, { status: 'done', bytes: total, total, savedPath, savedPathKind: kind });
+    toast(kind === 'desktop' ? t('savedTo', { path: directoryOf(savedPath) }) : t('fileDownloaded'), kind === 'desktop' ? 6000 : 2400);
+  } catch (cause: any) {
+    patchFileTransfer(sessionId, { status: 'error', error: cause?.message || String(cause) });
+    toast(cause?.message || String(cause), 5000);
+  }
+}
+
+function triggerUpload() {
+  if (isReadOnly.value) {
+    toast(t('readOnly'), 2400);
+    return;
+  }
+  uploadInput.value?.click();
+}
+
+async function handleUploadSelection(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (!files.length || !selectedContainer.value) return;
+  const directory = filePath.value;
+  for (const file of files) await uploadOne(file, joinContainerPath(directory, file.name));
+}
+
+async function uploadOne(file: File, targetPath: string) {
+  if (file.size > MAX_FILE_TRANSFER_BYTES) {
+    toast(t('fileTooLarge', { size: formatBytes(MAX_FILE_TRANSFER_BYTES) }), 5000);
+    return;
+  }
+  const sessionId = newSessionId();
+  let exitCode: number | undefined;
+  let stderr = '';
+  upsertFileTransfer({
+    sessionId,
+    name: file.name,
+    path: targetPath,
+    direction: 'upload',
+    status: 'running',
+    bytes: 0,
+    total: file.size,
+  });
+
+  // 上传结束信号来自 docker-exec 通道的 done 帧（后端会带上退出码）。
+  const finished = new Promise<void>((resolve) => {
+    registerExecStream(sessionId, (event) => {
+      if (event.chunk) stderr += event.chunk;
+      if (typeof event.exitCode === 'number') exitCode = event.exitCode;
+      if (event.done) resolve();
+    });
+  });
+
+  try {
+    await api.startFileUpload(connectionId.value, selectedContainer.value!.id, targetPath, sessionId, file.size);
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    await sendExecBytes(sessionId, buffer, (sent) => patchFileTransfer(sessionId, { bytes: sent }));
+    await finished;
+    if ((exitCode ?? 0) !== 0) {
+      throw new Error(stderr.trim() || t('uploadFailed', { code: exitCode ?? -1 }));
+    }
+    patchFileTransfer(sessionId, { status: 'done', bytes: file.size, total: file.size });
+    toast(t('fileUploaded', { name: file.name }), 3000);
+    await loadFiles();
+  } catch (cause: any) {
+    void api.stopExec(connectionId.value, sessionId).catch(() => undefined);
+    const message = cause?.message || String(cause);
+    patchFileTransfer(sessionId, { status: 'error', error: message });
+    toast(message, 5000);
+  } finally {
+    unregisterStream(sessionId);
+  }
+}
+
+async function cancelFileTransfer(task: FileTransferTask) {
+  if (task.status !== 'running') return;
+  unregisterStream(task.sessionId);
+  patchFileTransfer(task.sessionId, { status: 'cancelled' });
+  if (task.direction === 'download') {
+    await api.stopStream(connectionId.value, task.sessionId).catch(() => undefined);
+  } else {
+    await api.stopExec(connectionId.value, task.sessionId).catch(() => undefined);
+  }
+}
+
 async function sampleVisibleContainers() {
   if (document.hidden || resource.value !== 'containers' || selectedContainer.value) return;
   const ids = matchingContainers.value.filter(isRunning).map((container) => container.id);
@@ -1430,7 +1648,7 @@ onUnmounted(() => {
         <button class="icon-btn icon-amber" :title="t('engineInformation')" @click="loadEngineDetails('summary')"><Icon name="circle-help" /></button>
         <Popover :open="diskUsageOpen" @update:open="diskUsageOpen = $event">
           <template #trigger>
-            <button class="icon-btn icon-emerald" :title="t('diskUsage')" @click="openDiskUsage"><Icon name="hard-drive" /></button>
+            <button class="icon-btn icon-emerald" :title="t('diskUsage')"><Icon name="hard-drive" /></button>
           </template>
           <div class="disk-panel">
             <div class="disk-title">{{ t('diskUsage') }}</div>
@@ -1605,9 +1823,45 @@ onUnmounted(() => {
             <pre ref="logOutput" class="log-output" @scroll.passive="handleLogScroll">{{ visibleLogs || t('waitingForLogs') }}</pre>
           </div>
 
-          <div v-else-if="detailTab === 'monitoring'" class="monitoring-grid">
-            <LineChart title="CPU %" :data="cpuSeries[0].data" :color="cpuSeries[0].color" :value-formatter="(value) => `${value.toFixed(1)}%`" />
-            <LineChart :title="`${t('memory')} %`" :data="memorySeries[0].data" :color="memorySeries[0].color" :value-formatter="(value) => `${value.toFixed(1)}%`" />
+          <div v-else-if="detailTab === 'monitoring'" class="monitoring-pane">
+            <div class="monitor-summary">
+              <div class="docker-card">
+                <span>CPU</span>
+                <strong>{{ latestSample ? `${latestSample.cpuPercent.toFixed(1)}%` : '—' }}</strong>
+              </div>
+              <div class="docker-card">
+                <span>{{ t('memory') }}</span>
+                <strong>{{ latestSample ? `${formatBytes(latestSample.memoryUsage)} / ${formatBytes(latestSample.memoryLimit)}` : '—' }}</strong>
+                <small v-if="latestSample">{{ latestSample.memoryPercent.toFixed(1) }}%</small>
+              </div>
+              <div class="docker-card">
+                <span>{{ t('networkIo') }}</span>
+                <strong class="mono-xs">↓ {{ formatRate(latestNetworkRate.rx) }} · ↑ {{ formatRate(latestNetworkRate.tx) }}</strong>
+              </div>
+              <div class="docker-card">
+                <span>{{ t('blockIo') }}</span>
+                <strong class="mono-xs">{{ t('blockReadShort') }} {{ formatRate(latestBlockRate.read) }} · {{ t('blockWriteShort') }} {{ formatRate(latestBlockRate.write) }}</strong>
+              </div>
+            </div>
+            <div v-if="!trend.length" class="muted-text monitor-empty">{{ t('waitingForLogs') }}</div>
+            <div v-else class="monitoring-grid">
+              <MetricChart
+                title="CPU %"
+                :labels="monitorLabels"
+                :series="cpuChartSeries"
+                :max="100"
+                :axis-interval="25"
+                :value-formatter="(value) => `${value.toFixed(0)}%`"
+              />
+              <MetricChart
+                :title="t('memory')"
+                :labels="monitorLabels"
+                :series="memoryChartSeries"
+                :value-formatter="(value) => `${value.toFixed(0)} MiB`"
+              />
+              <MetricChart :title="t('networkIo')" :labels="monitorLabels" :series="networkChartSeries" :value-formatter="formatRate" />
+              <MetricChart :title="t('blockIo')" :labels="monitorLabels" :series="blockIoChartSeries" :value-formatter="formatRate" />
+            </div>
           </div>
 
           <div v-else-if="detailTab === 'terminal'" class="terminal-pane-wrapper">
@@ -1626,17 +1880,49 @@ onUnmounted(() => {
             <div class="files-list">
               <div class="files-toolbar">
                 <button class="btn btn-ghost btn-sm" :disabled="filePath === '/'" @click="loadFiles(parentPath(filePath))"><Icon name="arrow-left" /></button>
-                <span class="files-path">{{ filePath }}</span>
+                <span class="files-path" :title="filePath">{{ filePath }}</span>
+                <button class="btn btn-outline btn-sm" :disabled="isReadOnly || !selectedContainer" :title="t('uploadFile')" @click="triggerUpload">
+                  <Icon name="upload" />{{ t('uploadFile') }}
+                </button>
+                <input ref="uploadInput" type="file" multiple class="hidden-file-input" @change="handleUploadSelection" />
                 <button class="btn btn-ghost btn-sm" :disabled="fileLoading" @click="loadFiles()"><Icon name="refresh-cw" :class="{ spin: fileLoading }" /></button>
               </div>
               <div v-if="fileError" class="error-text files-error">{{ fileError }}</div>
               <div v-else class="files-scroll">
-                <button v-for="entry in fileEntries" :key="entry.path" class="file-row" @dblclick="openFile(entry)">
+                <div
+                  v-for="entry in fileEntries"
+                  :key="entry.path"
+                  class="file-row"
+                  :class="{ 'row-selected': fileSelection === entry.path }"
+                  @click="fileSelection = entry.path"
+                  @dblclick="openFile(entry)"
+                >
                   <Icon v-if="entry.kind === 'directory'" name="folder" class="file-icon-folder" />
                   <Icon v-else name="file" class="file-icon-file" />
-                  <span class="file-name">{{ entry.name }}</span>
+                  <span class="file-name truncate">{{ entry.name }}</span>
                   <span class="file-size">{{ entry.kind === 'directory' ? '' : formatBytes(entry.size) }}</span>
-                </button>
+                  <button
+                    v-if="entry.kind !== 'directory'"
+                    class="docker-copy-button"
+                    :title="t('download')"
+                    @click.stop="downloadFile(entry)"
+                  >
+                    <Icon name="download" />
+                  </button>
+                </div>
+              </div>
+              <div v-if="fileTransfers.length" class="file-transfers">
+                <div v-for="task in fileTransfers" :key="task.sessionId" class="file-transfer-row" :title="task.savedPath || task.path">
+                  <Icon :name="task.direction === 'upload' ? 'file-up' : 'file-down'" :class="task.direction === 'upload' ? 'transfer-icon-up' : 'transfer-icon-down'" />
+                  <span class="file-transfer-name truncate">{{ task.name }}</span>
+                  <span class="file-transfer-bytes mono-xs">{{ formatBytes(task.bytes) }}<template v-if="task.total"> / {{ formatBytes(task.total) }}</template></span>
+                  <span class="file-transfer-status" :class="`file-transfer-${task.status}`">
+                    <Icon v-if="task.status === 'running'" name="loader-circle" class="spin" />
+                    <template v-else>{{ t(`transferStatus.${task.status}`) }}</template>
+                  </span>
+                  <button v-if="task.status === 'running'" class="docker-copy-button" :title="t('cancel')" @click="cancelFileTransfer(task)"><Icon name="x" /></button>
+                  <div class="file-transfer-bar"><div class="file-transfer-bar-fill" :style="{ width: `${fileTransferPercent(task)}%` }" /></div>
+                </div>
               </div>
             </div>
             <div class="file-preview">
@@ -1706,7 +1992,7 @@ onUnmounted(() => {
                     </div>
                   </td>
                 </tr>
-                <tr v-for="container in expandedProjects.has(project) ? values : []" :key="container.id">
+                <tr v-for="container in expandedProjects.has(project) ? values : []" :key="container.id" :class="{ 'row-selected': selectedRowKey === container.id }" @click="selectedRowKey = container.id">
                   <td>
                     <div class="docker-copy-cell cell-indent">
                       <span class="status-dot" :class="isRunning(container) ? 'dot-running' : isPaused(container) ? 'dot-paused' : 'dot-stopped'" /><button class="link-btn" @click="openDetail(container)">{{ containerName(container) }}</button
@@ -1749,7 +2035,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
               </template>
-              <tr v-for="container in standaloneContainers" :key="container.id">
+              <tr v-for="container in standaloneContainers" :key="container.id" :class="{ 'row-selected': selectedRowKey === container.id }" @click="selectedRowKey = container.id">
                 <td>
                   <div class="docker-copy-cell">
                     <span class="status-dot" :class="isRunning(container) ? 'dot-running' : isPaused(container) ? 'dot-paused' : 'dot-stopped'" /><button class="link-btn" @click="openDetail(container)">{{ containerName(container) }}</button
@@ -1808,7 +2094,7 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in filteredImages" :key="item.id">
+              <tr v-for="item in filteredImages" :key="item.id" :class="{ 'row-selected': selectedRowKey === item.id }" @click="selectedRowKey = item.id">
                 <td :title="item.repoTags.join(', ')">
                   <div class="docker-copy-cell docker-truncated-cell">
                     <span class="truncate">{{ item.repoTags.join(', ') || '<none>' }}</span
@@ -1851,7 +2137,7 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in filteredVolumes" :key="item.name">
+              <tr v-for="item in filteredVolumes" :key="item.name" :class="{ 'row-selected': selectedRowKey === item.name }" @click="selectedRowKey = item.name">
                 <td class="cell-strong" :title="item.name"><div class="docker-truncated-cell">{{ item.name }}</div></td>
                 <td><div class="docker-truncated-cell">{{ item.driver }}</div></td>
                 <td><div class="docker-truncated-cell">{{ item.scope }}</div></td>
@@ -1875,7 +2161,7 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in filteredNetworks" :key="item.id">
+              <tr v-for="item in filteredNetworks" :key="item.id" :class="{ 'row-selected': selectedRowKey === item.id }" @click="selectedRowKey = item.id">
                 <td class="cell-strong">{{ item.name }}</td>
                 <td class="mono-xs">{{ shortId(item.id) }}</td>
                 <td>{{ item.driver }}</td>

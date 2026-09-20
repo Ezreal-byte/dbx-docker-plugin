@@ -3,7 +3,7 @@
 // 这里改为：后端走 binary channel（docker-log / docker-transfer），前端集中订阅后按 sessionId 分发。
 import { onBinary } from './bridge';
 import { stopStream } from './api';
-import { decodeFrame, type ExecHeader, type LogHeader, type TransferHeader } from './frames';
+import { decodeFrame, type ExecHeader, type FileHeader, type LogHeader, type TransferHeader } from './frames';
 import type { DockerStreamEvent, DockerStreamHandle, DockerTransferProgress } from './types';
 
 export interface ExportProgress extends DockerTransferProgress {
@@ -41,7 +41,20 @@ interface ExecListener {
   decoder: TextDecoder;
 }
 
-type Listener = LogListener | TransferListener | ExportListener | ExecListener;
+interface FileListener {
+  kind: 'file';
+  onEvent: (event: FileEvent) => void;
+}
+
+export interface FileEvent {
+  chunk: Uint8Array;
+  done: boolean;
+  bytesReceived: number;
+  size: number;
+  error?: string | null;
+}
+
+type Listener = LogListener | TransferListener | ExportListener | ExecListener | FileListener;
 
 const listeners = new Map<string, Listener>();
 let connectionId = '';
@@ -55,8 +68,37 @@ export function initStreams(connId: string) {
     if (channel === 'docker-log') handleLogFrame(data);
     else if (channel === 'docker-transfer') handleTransferFrame(data);
     else if (channel === 'docker-exec') handleExecFrame(data);
+    else if (channel === 'docker-file') handleFileFrame(data);
   });
 }
+
+function handleFileFrame(data: Uint8Array) {
+  const frame = decodeFrame<FileHeader>(data);
+  if (!frame) return;
+  const header = frame.header;
+  if (!header.sessionId) return;
+  const listener = listeners.get(header.sessionId);
+  if (!listener || listener.kind !== 'file') return;
+  const chunk = frame.kind === 1 ? frame.data : new Uint8Array(0);
+  const done = header.status === 'done' || header.status === 'error' || header.status === 'cancelled';
+  const state = fileProgress.get(header.sessionId) ?? { bytesReceived: 0 };
+  state.bytesReceived += chunk.length;
+  fileProgress.set(header.sessionId, state);
+  listener.onEvent({
+    chunk,
+    done,
+    bytesReceived: state.bytesReceived,
+    size: header.size ?? 0,
+    error: header.status === 'error' ? header.error || 'file download failed' : null,
+  });
+  if (done) {
+    listeners.delete(header.sessionId);
+    fileProgress.delete(header.sessionId);
+  }
+}
+
+// 下载进度按 sessionId 累计，避免让调用方自己维护。
+const fileProgress = new Map<string, { bytesReceived: number }>();
 
 function handleExecFrame(data: Uint8Array) {
   const frame = decodeFrame<ExecHeader>(data);
@@ -178,6 +220,16 @@ export function registerExecStream(
   return makeHandle(sessionId);
 }
 
+export function registerFileStream(
+  sessionId: string,
+  onEvent: (event: FileEvent) => void,
+): DockerStreamHandle {
+  listeners.set(sessionId, { kind: 'file', onEvent });
+  fileProgress.set(sessionId, { bytesReceived: 0 });
+  return makeHandle(sessionId);
+}
+
 export function unregisterStream(sessionId: string) {
   listeners.delete(sessionId);
+  fileProgress.delete(sessionId);
 }

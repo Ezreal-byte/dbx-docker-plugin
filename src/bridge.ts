@@ -28,8 +28,15 @@ interface DbxPlugin {
   onContext(fn: (context: PluginContext) => void): () => void;
   onBinary(fn: (payload: { channel: string; data: Uint8Array }) => void): () => void;
   sendBinary?(channel: string, data: string | Uint8Array | ArrayBuffer): Promise<unknown>;
-  /** 桌面宿主弹原生保存对话框并回传绝对路径；Web 宿主回传文件名。取消时回传 null。 */
-  saveFile?(options: { suggestedName?: string; data?: ArrayBuffer }): Promise<{ path?: string } | null>;
+  /**
+   * 宿主签名是 saveFile(options, data)：data 必须作为第二个参数传入，
+   * 否则宿主会直接抛 "requires transferred binary data or dataBase64"。
+   * 桌面宿主弹原生保存对话框并回传绝对路径；Web 宿主回传文件名；取消时回传 null。
+   */
+  saveFile?(
+    options?: { fileName?: string; contentType?: string },
+    data?: Uint8Array | ArrayBuffer | string,
+  ): Promise<{ path?: string } | null>;
   copy?(text: string): Promise<unknown>;
 }
 

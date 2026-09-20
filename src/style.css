@@ -186,8 +186,12 @@ input, textarea, select { font: inherit; color: var(--foreground); }
   font-family: var(--mono-font); font-size: 0.75rem; line-height: 1.5;
 }
 .monitoring-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+.monitoring-pane { display: flex; flex-direction: column; gap: 12px; }
+.monitor-summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.monitor-empty { padding: 24px 0; text-align: center; }
 .chart-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px; background: color-mix(in srgb, var(--muted) 20%, transparent); }
 .chart-title { font-size: 0.8rem; font-weight: 600; margin-bottom: 8px; color: var(--muted-foreground); }
+.echart-host { width: 100%; height: 220px; }
 .chart-svg { width: 100%; height: 220px; }
 .chart-grid { stroke: color-mix(in srgb, var(--muted-foreground) 25%, transparent); stroke-width: 0.5; }
 .chart-label { font-size: 8px; fill: var(--muted-foreground); font-family: var(--mono-font); }
@@ -234,11 +238,27 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .files-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono-font); font-size: 0.75rem; }
 .files-error { padding: 12px; }
 .files-scroll { flex: 1; min-height: 0; overflow: auto; }
+.hidden-file-input { display: none; }
+.file-transfers { border-top: 1px solid var(--border); max-height: 10rem; overflow: auto; }
+.file-transfer-row {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border); padding: 5px 10px 7px; font-size: 0.7rem;
+}
+.file-transfer-name { flex: 1; min-width: 0; }
+.file-transfer-bytes { color: var(--muted-foreground); white-space: nowrap; }
+.file-transfer-status { flex-shrink: 0; color: var(--muted-foreground); white-space: nowrap; }
+.file-transfer-running { color: #0284c7; }
+.file-transfer-done { color: #16a34a; }
+.file-transfer-error { color: var(--destructive); }
+.file-transfer-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: color-mix(in srgb, var(--muted) 70%, transparent); }
+.file-transfer-bar-fill { height: 100%; background: var(--primary); transition: width 0.2s linear; }
 .file-row {
   display: flex; width: 100%; align-items: center; gap: 8px;
   border-bottom: 1px solid var(--border); padding: 8px 12px; text-align: left; font-size: 0.875rem;
 }
+.file-row { cursor: default; }
 .file-row:hover { background: color-mix(in srgb, var(--muted) 50%, transparent); }
+.file-row.row-selected { background: color-mix(in srgb, var(--primary) 12%, transparent); box-shadow: inset 2px 0 0 var(--primary); }
 .file-icon-folder { color: #f59e0b; width: 1rem; height: 1rem; }
 .file-icon-file { color: #0ea5e9; width: 1rem; height: 1rem; }
 .file-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -348,6 +368,17 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .transfer-saved-label { flex-shrink: 0; }
 .transfer-saved-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono-font); direction: rtl; text-align: left; }
 .transfer-saved .docker-copy-button { flex-shrink: 0; }
+
+/* ---------- 表格斑马纹与行选中 ---------- */
+.docker-table tbody tr:nth-child(even):not(.compose-header) > td { background: color-mix(in srgb, var(--muted) 32%, transparent); }
+.docker-table tbody tr:not(.compose-header) { cursor: default; }
+.docker-table tbody tr.row-selected > td {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--primary) 25%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--primary) 25%, transparent);
+}
+.docker-table tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--primary), inset 0 1px 0 color-mix(in srgb, var(--primary) 25%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--primary) 25%, transparent); }
+.docker-table tbody tr:not(.compose-header):hover > td { background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.docker-table tbody tr.row-selected:hover > td { background: color-mix(in srgb, var(--primary) 16%, transparent); }
 
 /* ---------- 磁盘占用与清理 ---------- */
 .disk-panel { width: 30rem; max-width: 80vw; }
