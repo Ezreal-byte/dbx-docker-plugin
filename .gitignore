@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.dbx-dev/
+backend/backend.exe
+backend/*.exe
+ui/

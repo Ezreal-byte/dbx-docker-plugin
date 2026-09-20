@@ -1,0 +1,12 @@
+schema_version = 1
+
+[backend]
+language = "go"
+directory = "backend"
+binary = "dbx-docker-plugin"
+
+[package]
+include = ["assets", "ui", "LICENSE", "NOTICE"]
+
+[dev]
+ui_build = ["npm", "run", "build"]

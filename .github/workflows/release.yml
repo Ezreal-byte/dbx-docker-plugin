@@ -1,0 +1,20 @@
+name: Build Docker plugin candidates
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  candidates:
+    uses: t8y2/dbx/.github/workflows/plugin-release-reusable.yml@plugin-sdk-v1
+    with:
+      release-tag: ${{ github.event.release.tag_name }}
+      package-command: npm ci --ignore-scripts && npm test && go -C backend test ./... && go -C backend/sdk test ./... && npm run package
+      package-path: dist/*.dbxp
+      metadata-path: dist/*.artifact.json
+      go-version: 1.26.x
+      plugin-cli-version: 0.1.9
+      install-plugin-cli: false
