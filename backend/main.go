@@ -14,7 +14,7 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.1.1"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。

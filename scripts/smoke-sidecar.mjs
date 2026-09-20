@@ -35,7 +35,7 @@ const response = new Promise((resolve, reject) => {
 
 child.stdin.end(frame);
 const result = await response;
-if (result.error || result.result?.protocolVersion !== 1 || result.result?.plugin?.id !== 'io.dbx.docker' || result.result?.plugin?.version !== '0.1.0') {
+if (result.error || result.result?.protocolVersion !== 1 || result.result?.plugin?.id !== 'io.dbx.docker' || result.result?.plugin?.version !== '0.1.1') {
   throw new Error(`Unexpected sidecar handshake: ${JSON.stringify(result)}`);
 }
 console.log('Sidecar handshake passed');
