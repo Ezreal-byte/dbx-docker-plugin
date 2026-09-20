@@ -2,7 +2,7 @@
 
 `io.dbx.docker` adds a Docker Engine connection and workbench to DBX. The backend is a Go sidecar using the Docker SDK; the UI is a Vue workbench packaged into a `.dbxp` file.
 
-The workbench lists containers, images, volumes, and networks. It supports container lifecycle and creation, image pull/push/export, live logs, short-term resource monitoring, read-only file browsing, an interactive container terminal, and a controlled subset of Compose YAML. It was adapted from the unmerged DBX Docker workbench branch. The source branch remains available for comparison at [`Ezreal-byte/dbx` (`codex/feature-docker-workbench`)](https://github.com/Ezreal-byte/dbx/tree/codex/feature-docker-workbench).
+The workbench lists containers, images, volumes, and networks. It supports container lifecycle and creation, container rename, image pull/push/export, image tagging and per-tag removal, image layer history, live logs, short-term resource monitoring, read-only file browsing, an interactive container terminal, engine disk usage with pruning, and a controlled subset of Compose YAML. It was adapted from the unmerged DBX Docker workbench branch. The source branch remains available for comparison at [`Ezreal-byte/dbx` (`codex/feature-docker-workbench`)](https://github.com/Ezreal-byte/dbx/tree/codex/feature-docker-workbench).
 
 The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the host initialization handshake and re-applies the language on `dbx-plugin-init` / `dbx-plugin-env`, so switching the DBX language updates the workbench without a reload.
 
@@ -23,6 +23,18 @@ Unix sockets cannot be expressed as a DBX static TCP forward, so `unix-over-nc` 
 ## Container terminal
 
 Running containers expose a **Terminal** tab backed by `docker exec` with a TTY. The frontend renders an xterm.js terminal and streams keystrokes to the sidecar over the `docker-exec` binary channel; output returns on the same channel. The default command is `/bin/sh` and can be replaced with any argv (for example `/bin/bash` or `psql -U postgres`). Terminals are refused on read-only connections, and on connections marked as production they require an explicit confirmation first.
+
+## Image export and where files land
+
+Image export asks the desktop host for a native save dialog and the host returns the absolute path it wrote. Every finished download keeps that path in the transfer record, so the **Transfers** popover shows the destination directory and a one-click **copy path** button instead of leaving the file location unknown. The web host cannot hand a client path to the plugin, so there the record shows the browser-download hint instead of a directory.
+
+A plugin sandbox has no host API to reveal a path in the OS file manager (`reveal_path_in_file_manager` is app-internal), so the plugin copies the path rather than opening Explorer.
+
+## Disk usage and pruning
+
+The header exposes a `docker system df` view with per-category size and reclaimable space for images, containers, volumes, build cache, and networks, plus a prune button per category (dangling images by default, or every unused image). Pruning requires a writable connection and an explicit confirmation.
+
+## Limitations
 
 The plugin does not include a Docker daemon or the Docker CLI. The Compose editor supports common image, environment, port, volume, network, restart, label, and command fields. It does not implement builds, `.env`, `depends_on` health checks, or arbitrary Compose extensions. File browsing requires `/bin/sh`, `stat`, and `head` in the container, and the container terminal requires the requested command to exist inside the container (distroless images without a shell cannot open one). Image export is buffered in the workbench, so very large archives may exceed available memory.
 
@@ -46,9 +58,11 @@ go -C backend build -o ../dist/verify-sidecar.exe .
 node scripts/smoke-sidecar.mjs dist/verify-sidecar.exe http://127.0.0.1:2375 <running container name>
 ```
 
-It verifies the handshake, direct and tunnel-routed connections, the remote plain-HTTP guard, resource listing, log streaming, read-only file browsing, the interactive terminal (stdin, resize, exit), and the read-only terminal guard.
+It verifies the handshake, direct and tunnel-routed connections, the remote plain-HTTP guard, resource listing, log streaming, read-only file browsing, the interactive terminal (stdin, resize, exit), the read-only terminal guard, disk usage, image tag/untag round-trip, image layer history, and container rename round-trip.
 
-On Windows x64, the package is `dist/io.dbx.docker-0.1.2-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
+The container rename and image tag checks restore the original state in a `finally` block, and pruning is skipped unless `SMOKE_ALLOW_PRUNE=1` is set — pruning really deletes stopped containers.
+
+On Windows x64, the package is `dist/io.dbx.docker-0.1.3-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
 
 Publishing a GitHub Release triggers `.github/workflows/release.yml` to build separate native candidates for Windows, macOS, and Linux. Release assets and `release-candidates.json` are the inputs to a candidate PR in [`t8y2/dbx-store`](https://github.com/t8y2/dbx-store). The store signs approved bytes; this repository contains no signing key.
 

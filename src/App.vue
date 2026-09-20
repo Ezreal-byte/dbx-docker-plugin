@@ -9,7 +9,7 @@ import * as api from './api';
 import { initStreams, registerExportStream, registerTransferStream, startLogStream, unregisterStream, type ExportProgress } from './streams';
 import { createDockerProgressParseState, parseDockerProgressEvent, type DockerProgressParseState } from './progress';
 import { createPendingDockerPullTask, newSessionId } from './pullTask';
-import { copyToClipboard, formatBytes, formatDate, shortId } from './format';
+import { copyToClipboard, directoryOf, formatBytes, formatDate, savedPathKind, shortId } from './format';
 import { toast, toasts } from './toast';
 import type {
   DockerComposeApplyRequest,
@@ -19,11 +19,15 @@ import type {
   DockerCreateContainerRequest,
   DockerCreateNetworkRequest,
   DockerCreateVolumeRequest,
+  DockerDiskUsage,
+  DockerDiskUsageCategory,
   DockerEngineDetails,
   DockerFileEntry,
   DockerFilePreview,
   DockerImage,
+  DockerImageLayer,
   DockerNetwork,
+  DockerPruneTarget,
   DockerRegistryAuth,
   DockerStreamHandle,
   DockerTransferProgress,
@@ -70,7 +74,12 @@ const inspect = ref<Record<string, any>>({});
 const trend = ref<TrendPoint[]>([]);
 const actionInFlight = ref<Record<string, string | undefined>>({});
 const imageActionInFlight = ref<Record<string, string | undefined>>({});
-type TransferTask = DockerTransferProgress & { startedAt: number; handle?: DockerStreamHandle };
+type TransferTask = DockerTransferProgress & {
+  startedAt: number;
+  handle?: DockerStreamHandle;
+  savedPath?: string;
+  savedPathKind?: 'desktop' | 'web';
+};
 const transfers = ref<TransferTask[]>([]);
 const cancelledTransferIds = new Set<string>();
 const transferParseStates = new Map<string, DockerProgressParseState>();
@@ -124,6 +133,26 @@ const createContainerDraft = ref({
 const pullDraft = ref({ image: '', serverAddress: '', username: '', password: '' });
 const volumeDraft = ref({ name: '', driver: 'local', labels: '', driverOptions: '' });
 const networkDraft = ref({ name: '', driver: 'bridge', internal: false, attachable: false, subnet: '', gateway: '' });
+
+// ---------- 磁盘占用与清理 ----------
+const diskUsageOpen = ref(false);
+const diskUsage = ref<DockerDiskUsage>();
+const diskUsageLoading = ref(false);
+const diskUsageError = ref('');
+const pruneInFlight = ref<DockerPruneTarget | ''>('');
+
+// ---------- 重命名 / 打标签 / 分层历史 ----------
+const renameOpen = ref(false);
+const renameDraft = ref({ containerId: '', name: '' });
+const renameSubmitting = ref(false);
+const tagOpen = ref(false);
+const tagDraft = ref({ imageId: '', reference: '', repository: '', tag: 'latest' });
+const tagSubmitting = ref(false);
+const historyOpen = ref(false);
+const historyImage = ref('');
+const historyLayers = ref<DockerImageLayer[]>([]);
+const historyLoading = ref(false);
+const historyError = ref('');
 
 const logText = ref('');
 const pendingLogText = ref('');
@@ -179,6 +208,149 @@ async function openTerminalTab() {
   if (isProduction.value && !(await requestConfirmation(t('confirmTerminal', { name: containerName(container) })))) return;
   terminalTabRequested.value = true;
   detailTab.value = 'terminal';
+}
+
+// ---------- 磁盘占用与清理 ----------
+
+async function loadDiskUsage() {
+  diskUsageLoading.value = true;
+  diskUsageError.value = '';
+  try {
+    diskUsage.value = await api.getDiskUsage(connectionId.value);
+  } catch (cause: any) {
+    diskUsageError.value = cause?.message || String(cause);
+  } finally {
+    diskUsageLoading.value = false;
+  }
+}
+
+function openDiskUsage() {
+  diskUsageOpen.value = true;
+  void loadDiskUsage();
+}
+
+async function runPrune(target: DockerPruneTarget, all: boolean, actionLabel: string) {
+  if (isReadOnly.value) {
+    toast(t('readOnly'), 2400);
+    return;
+  }
+  if (!(await requestConfirmation(t('confirmPrune', { action: actionLabel })))) return;
+  pruneInFlight.value = target;
+  try {
+    const result = await api.prune(connectionId.value, target, all);
+    const count = result.deleted?.length ?? 0;
+    if (!count && !result.spaceReclaimed) toast(t('pruneNothing'), 2400);
+    else toast(t('pruneDone', { count, size: formatBytes(result.spaceReclaimed || 0) }), 3600);
+    await loadDiskUsage();
+    await loadResource();
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  } finally {
+    pruneInFlight.value = '';
+  }
+}
+
+// ---------- 容器重命名 ----------
+
+function openRename(container: DockerContainer) {
+  if (isReadOnly.value) {
+    toast(t('readOnly'), 2400);
+    return;
+  }
+  renameDraft.value = { containerId: container.id, name: containerName(container) };
+  renameOpen.value = true;
+}
+
+async function submitRename() {
+  const name = renameDraft.value.name.trim();
+  if (!name || renameSubmitting.value) return;
+  renameSubmitting.value = true;
+  try {
+    await api.renameContainer(connectionId.value, renameDraft.value.containerId, name);
+    toast(t('containerRenamed', { name }), 2400);
+    renameOpen.value = false;
+    await loadContainers();
+    if (selectedContainerId.value === renameDraft.value.containerId) {
+      inspect.value = (await api.inspectContainer(connectionId.value, renameDraft.value.containerId)) as Record<string, any>;
+    }
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  } finally {
+    renameSubmitting.value = false;
+  }
+}
+
+// ---------- 镜像打标签 / 分层历史 ----------
+
+function openTagImage(item: DockerImage) {
+  if (isReadOnly.value) {
+    toast(t('readOnly'), 2400);
+    return;
+  }
+  tagDraft.value = {
+    imageId: item.id,
+    reference: item.repoTags.find((tag) => tag && tag !== '<none>:<none>') || shortId(item.id),
+    repository: '',
+    tag: 'latest',
+  };
+  tagOpen.value = true;
+}
+
+async function submitTagImage() {
+  const repository = tagDraft.value.repository.trim();
+  if (!repository || tagSubmitting.value) return;
+  tagSubmitting.value = true;
+  try {
+    const result = await api.tagImage(
+      connectionId.value,
+      tagDraft.value.imageId,
+      repository,
+      tagDraft.value.tag.trim() || 'latest',
+    );
+    toast(t('imageTagged', { reference: result.reference }), 3000);
+    tagOpen.value = false;
+    await loadResource('images');
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  } finally {
+    tagSubmitting.value = false;
+  }
+}
+
+const tagDraftTags = computed(() => {
+  const image = images.value.find((item) => item.id === tagDraft.value.imageId);
+  return (image?.repoTags ?? []).filter((tag) => tag && tag !== '<none>:<none>');
+});
+
+async function removeImageTag(reference: string) {
+  if (isReadOnly.value) {
+    toast(t('readOnly'), 2400);
+    return;
+  }
+  if (!(await requestConfirmation(t('confirmRemoveTag', { reference })))) return;
+  try {
+    await api.untagImage(connectionId.value, reference);
+    toast(t('tagRemoved', { reference }), 3000);
+    await loadResource('images');
+  } catch (cause: any) {
+    toast(cause?.message || String(cause), 5000);
+  }
+}
+
+async function openImageHistory(item: DockerImage) {
+  const tagged = item.repoTags.find((tag) => tag && tag !== '<none>:<none>');
+  historyImage.value = tagged || shortId(item.id);
+  historyLayers.value = [];
+  historyError.value = '';
+  historyOpen.value = true;
+  historyLoading.value = true;
+  try {
+    historyLayers.value = await api.imageHistory(connectionId.value, item.id);
+  } catch (cause: any) {
+    historyError.value = cause?.message || String(cause);
+  } finally {
+    historyLoading.value = false;
+  }
 }
 
 function formatPorts(container: DockerContainer): string {
@@ -301,6 +473,30 @@ const filteredEngineJson = computed(() => {
 });
 const runningTransfers = computed(() => transfers.value.filter((task) => task.status === 'running').length);
 
+interface DiskUsageRow {
+  key: 'images' | 'containers' | 'volumes' | 'networks' | 'buildCache';
+  count: number;
+  size: number;
+  reclaimable: number;
+  target?: DockerPruneTarget;
+  allTarget?: DockerPruneTarget;
+  pruneLabel: string;
+}
+
+const diskUsageRows = computed<DiskUsageRow[]>(() => {
+  const usage = diskUsage.value;
+  if (!usage) return [];
+  const category = (value: DockerDiskUsageCategory | undefined): DockerDiskUsageCategory =>
+    value ?? { count: 0, size: 0, reclaimable: 0 };
+  return [
+    { key: 'images', ...category(usage.images), target: 'images', allTarget: 'images', pruneLabel: t('pruneImages') },
+    { key: 'containers', ...category(usage.containers), target: 'containers', pruneLabel: t('pruneContainers') },
+    { key: 'volumes', ...category(usage.volumes), target: 'volumes', pruneLabel: t('pruneVolumes') },
+    { key: 'networks', ...category(usage.networks), target: 'networks', pruneLabel: t('pruneNetworks') },
+    { key: 'buildCache', ...category(usage.buildCache), pruneLabel: '' },
+  ];
+});
+
 function tableStyle(kind: ResourceKind) {
   return { minWidth: `${columnWidths.value[kind].reduce((sum, width) => sum + width, 0)}px` };
 }
@@ -339,6 +535,19 @@ function upsertTransfer(progress: DockerTransferProgress, handle?: DockerStreamH
   } else {
     transfers.value = [{ ...progress, startedAt: Date.now(), handle }, ...transfers.value].slice(0, 50);
   }
+}
+
+// 记录下载落到磁盘的真实路径：桌面宿主返回绝对路径，Web 宿主只返回文件名。
+function setTransferSavedPath(sessionId: string, savedPath: string, hostKind: 'desktop' | 'web') {
+  transfers.value = transfers.value.map((task) =>
+    task.sessionId === sessionId ? { ...task, savedPath, savedPathKind: hostKind } : task,
+  );
+}
+
+async function copySavedPath(task: TransferTask) {
+  if (!task.savedPath) return;
+  await copyToClipboard(task.savedPath);
+  toast(t('pathCopied'), 1800);
 }
 
 function transferPercent(task: TransferTask): number | undefined {
@@ -772,7 +981,7 @@ async function exportImage(item: DockerImage) {
       upsertTransfer(progress, handle);
       if (progress.status === 'done') {
         imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: undefined };
-        void saveExport(progress, fileName, item.id);
+        void saveExport(progress, fileName, item.id, sessionId);
       }
       if (progress.status === 'error' || progress.status === 'cancelled') {
         imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: undefined };
@@ -791,7 +1000,7 @@ async function exportImage(item: DockerImage) {
   }
 }
 
-async function saveExport(progress: ExportProgress, fileName: string, imageId: string) {
+async function saveExport(progress: ExportProgress, fileName: string, imageId: string, sessionId: string) {
   try {
     const chunks = progress.dataChunks;
     const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -803,8 +1012,20 @@ async function saveExport(progress: ExportProgress, fileName: string, imageId: s
     }
     const plugin = getPlugin();
     if (plugin.saveFile) {
-      await plugin.saveFile({ suggestedName: fileName, data: merged.buffer });
-      toast(t('imageExported'), 2400);
+      // 桌面宿主会弹原生保存对话框并回传绝对路径；Web 宿主只回传文件名。
+      const result = (await plugin.saveFile({ suggestedName: fileName, data: merged.buffer })) as
+        | { path?: string }
+        | null
+        | undefined;
+      const savedPath = typeof result?.path === 'string' ? result.path : '';
+      if (savedPath) {
+        const kind = savedPathKind(savedPath, fileName);
+        setTransferSavedPath(sessionId, savedPath, kind);
+        toast(kind === 'desktop' ? t('savedTo', { path: directoryOf(savedPath) }) : t('imageExported'), kind === 'desktop' ? 6000 : 2400);
+      } else {
+        // 用户在原生保存对话框中取消。
+        toast(t('imageExported'), 2400);
+      }
     } else {
       // 兜底（dev-host 浏览器环境）：走 Blob 下载。
       const blob = new Blob([merged], { type: 'application/octet-stream' });
@@ -814,6 +1035,7 @@ async function saveExport(progress: ExportProgress, fileName: string, imageId: s
       anchor.download = fileName;
       anchor.click();
       URL.revokeObjectURL(url);
+      setTransferSavedPath(sessionId, fileName, 'web');
       toast(t('imageExported'), 2400);
     }
   } catch (cause: any) {
@@ -1132,6 +1354,12 @@ watch(detailTab, async (tab) => {
   restartDetailSampling();
 });
 
+// 容器在终端打开期间被停止时，终端标签会从列表消失；同步把面板切回概览，
+// 避免出现「标签已消失但面板仍停留」的残缺状态。
+watch(detailTabs, (tabs) => {
+  if (detailTab.value === 'terminal' && !tabs.includes('terminal')) detailTab.value = 'overview';
+});
+
 watch(resource, () => {
   restartListSampling();
   restartResourceRefresh();
@@ -1200,6 +1428,58 @@ onUnmounted(() => {
       <div class="header-actions">
         <button class="icon-btn icon-cyan" :title="t('engineJson')" @click="loadEngineDetails('json')"><Icon name="settings" /></button>
         <button class="icon-btn icon-amber" :title="t('engineInformation')" @click="loadEngineDetails('summary')"><Icon name="circle-help" /></button>
+        <Popover :open="diskUsageOpen" @update:open="diskUsageOpen = $event">
+          <template #trigger>
+            <button class="icon-btn icon-emerald" :title="t('diskUsage')" @click="openDiskUsage"><Icon name="hard-drive" /></button>
+          </template>
+          <div class="disk-panel">
+            <div class="disk-title">{{ t('diskUsage') }}</div>
+            <div class="disk-desc">{{ t('diskUsageDescription') }}</div>
+            <div v-if="diskUsageError" class="error-text disk-error">{{ diskUsageError }}</div>
+            <div v-else-if="diskUsageLoading && !diskUsage" class="muted-text disk-loading">{{ t('waitingForLogs') }}</div>
+            <table v-else-if="diskUsage" class="disk-table">
+              <tbody>
+                <tr v-for="row in diskUsageRows" :key="row.key">
+                  <td class="disk-name">{{ t(row.key) }}</td>
+                  <td class="disk-count">{{ row.count }}</td>
+                  <td class="disk-size">{{ formatBytes(row.size) }}</td>
+                  <td class="disk-reclaim">{{ formatBytes(row.reclaimable) }}</td>
+                  <td class="disk-action">
+                    <button
+                      v-if="row.target"
+                      class="btn btn-outline btn-sm"
+                      :disabled="isReadOnly || pruneInFlight === row.target"
+                      @click="runPrune(row.target, false, row.pruneLabel)"
+                    >
+                      <Icon v-if="pruneInFlight === row.target" name="loader-circle" class="spin" />
+                      {{ t('prune') }}
+                    </button>
+                    <button
+                      v-else-if="row.allTarget"
+                      class="btn btn-outline btn-sm"
+                      :disabled="isReadOnly || pruneInFlight === row.allTarget"
+                      @click="runPrune(row.allTarget, true, t('pruneImagesAll'))"
+                    >
+                      <Icon v-if="pruneInFlight === row.allTarget" name="loader-circle" class="spin" />
+                      {{ t('pruneImagesAll') }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td colspan="2">{{ t('storageTotal') }}</td>
+                  <td colspan="2">{{ formatBytes(diskUsage.layersSize) }}</td>
+                  <td>
+                    <button class="btn btn-ghost btn-sm" :disabled="diskUsageLoading" @click="loadDiskUsage">
+                      <Icon name="refresh-cw" :class="{ spin: diskUsageLoading }" />
+                    </button>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </Popover>
         <Popover :open="transferOpen" @update:open="transferOpen = $event">
           <template #trigger>
             <button class="icon-btn icon-blue" :title="t('transfers')">
@@ -1227,6 +1507,12 @@ onUnmounted(() => {
                 <div class="transfer-meta">
                   <span class="truncate">{{ t(`transferStatus.${task.status}`) }}</span>
                   <span class="transfer-bytes">{{ formatBytes(task.bytesCompleted) }}<template v-if="task.bytesTotal"> / {{ formatBytes(task.bytesTotal) }}</template></span>
+                </div>
+                <div v-if="task.savedPath" class="transfer-saved" :title="task.savedPath">
+                  <Icon name="folder" class="transfer-saved-icon" />
+                  <span class="transfer-saved-label">{{ t('savedPathLabel') }}</span>
+                  <span class="transfer-saved-path">{{ task.savedPathKind === 'web' ? t('browserDownloadHint') : directoryOf(task.savedPath) }}</span>
+                  <button class="docker-copy-button" :title="t('copyPath')" @click="copySavedPath(task)"><Icon name="copy" /></button>
                 </div>
                 <div v-if="task.error" class="transfer-error">{{ task.error }}</div>
               </div>
@@ -1330,6 +1616,7 @@ onUnmounted(() => {
               :key="selectedContainer.id"
               :connection-id="connectionId"
               :container-id="selectedContainer.id"
+              :container-name="containerName(selectedContainer)"
               :read-only="isReadOnly"
               :running="isRunning(selectedContainer)"
             />
@@ -1456,6 +1743,7 @@ onUnmounted(() => {
                         ><Icon v-if="actionInFlight[container.id] === 'start'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
                       ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
                         ><Icon v-if="actionInFlight[container.id] === 'remove'" name="loader-circle" class="spin" /><Icon v-else name="trash-2" /></button
+                      ><button v-if="!isReadOnly" class="icon-btn icon-sm" :title="t('rename')" @click="openRename(container)"><Icon name="pencil" /></button
                       ><button class="btn btn-ghost btn-sm" @click="openDetail(container)">{{ t('details') }}</button>
                     </div>
                   </td>
@@ -1498,6 +1786,7 @@ onUnmounted(() => {
                       ><Icon v-if="actionInFlight[container.id] === 'start'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
                     ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
                       ><Icon v-if="actionInFlight[container.id] === 'remove'" name="loader-circle" class="spin" /><Icon v-else name="trash-2" /></button
+                    ><button v-if="!isReadOnly" class="icon-btn icon-sm" :title="t('rename')" @click="openRename(container)"><Icon name="pencil" /></button
                     ><button class="btn btn-ghost btn-sm" @click="openDetail(container)">{{ t('details') }}</button>
                   </div>
                 </td>
@@ -1539,6 +1828,8 @@ onUnmounted(() => {
                     <button class="btn btn-ghost btn-sm" :disabled="isReadOnly || !!imageActionInFlight[item.id]" @click="openPushImage(item)"><Icon name="upload" />{{ t('push') }}</button
                     ><button class="btn btn-ghost btn-sm" :disabled="!!imageActionInFlight[item.id]" @click="exportImage(item)"
                       ><Icon v-if="imageActionInFlight[item.id] === 'export'" name="loader-circle" class="spin" /><Icon v-else name="download" />{{ t('export') }}</button
+                    ><button class="icon-btn icon-sm" :title="t('imageHistory')" @click="openImageHistory(item)"><Icon name="layers" /></button
+                    ><button v-if="!isReadOnly" class="icon-btn icon-sm" :title="t('tagImage')" @click="openTagImage(item)"><Icon name="tag" /></button
                     ><button class="icon-btn icon-sm" :disabled="isReadOnly || !!imageActionInFlight[item.id]" :title="t('remove')" @click="removeImage(item)"
                       ><Icon v-if="imageActionInFlight[item.id] === 'remove'" name="loader-circle" class="spin" /><Icon v-else name="trash-2" /></button>
                   </div>
@@ -1773,6 +2064,70 @@ onUnmounted(() => {
       <div class="dlg-footer">
         <button class="btn btn-outline" @click="createNetworkOpen = false">{{ t('cancel') }}</button>
         <button class="btn btn-primary" :disabled="submitting || !networkDraft.name.trim()" @click="createNetwork">{{ t('create') }}</button>
+      </div>
+    </Dialog>
+
+    <Dialog :open="renameOpen" @update:open="renameOpen = $event">
+      <div class="dlg-header">
+        <div class="dlg-title">{{ t('renameContainer') }}</div>
+        <div class="dlg-desc">{{ t('renameContainerDescription') }}</div>
+      </div>
+      <label class="docker-field"><span>{{ t('containerNameLabel') }}</span><input v-model="renameDraft.name" class="input" @keydown.enter.prevent="submitRename" /></label>
+      <div class="dlg-footer">
+        <button class="btn btn-outline" @click="renameOpen = false">{{ t('cancel') }}</button>
+        <button class="btn btn-primary" :disabled="renameSubmitting || !renameDraft.name.trim()" @click="submitRename">{{ t('confirm') }}</button>
+      </div>
+    </Dialog>
+
+    <Dialog :open="tagOpen" @update:open="tagOpen = $event">
+      <div class="dlg-header">
+        <div class="dlg-title">{{ t('tagImage') }}</div>
+        <div class="dlg-desc">{{ t('tagImageDescription') }}</div>
+      </div>
+      <div class="stack">
+        <div class="muted-text mono-xs break-all">{{ tagDraft.reference }}</div>
+        <div class="docker-field">
+          <span>{{ t('existingTags') }}</span>
+          <div v-if="tagDraftTags.length" class="tag-chip-list">
+            <span v-for="tag in tagDraftTags" :key="tag" class="tag-chip">
+              <span class="mono-xs">{{ tag }}</span>
+              <button v-if="!isReadOnly" class="tag-chip-remove" :title="t('removeTag')" @click="removeImageTag(tag)"><Icon name="x" /></button>
+            </span>
+          </div>
+          <div v-else class="muted-text xs-strong">{{ t('noTags') }}</div>
+        </div>
+        <label class="docker-field"><span>{{ t('repositoryLabel') }}</span><input v-model="tagDraft.repository" class="input" placeholder="registry.example.com/team/app" /></label>
+        <label class="docker-field"><span>{{ t('tagLabel') }}</span><input v-model="tagDraft.tag" class="input" placeholder="latest" /></label>
+      </div>
+      <div class="dlg-footer">
+        <button class="btn btn-outline" @click="tagOpen = false">{{ t('cancel') }}</button>
+        <button class="btn btn-primary" :disabled="tagSubmitting || !tagDraft.repository.trim()" @click="submitTagImage">{{ t('confirm') }}</button>
+      </div>
+    </Dialog>
+
+    <Dialog :open="historyOpen" content-class="dlg-wide" @update:open="historyOpen = $event">
+      <div class="dlg-header">
+        <div class="dlg-title">{{ t('imageHistory') }}</div>
+        <div class="dlg-desc">{{ historyImage }} · {{ t('imageHistoryDescription') }}</div>
+      </div>
+      <div v-if="historyLoading" class="muted-text">{{ t('waitingForLogs') }}</div>
+      <div v-else-if="historyError" class="error-text">{{ historyError }}</div>
+      <div v-else-if="!historyLayers.length" class="muted-text">{{ t('imageHistoryEmpty') }}</div>
+      <div v-else class="layers-list">
+        <div v-for="(layer, index) in historyLayers" :key="`${layer.id}-${index}`" class="layer-row">
+          <div class="layer-head">
+            <span class="layer-index mono-xs">{{ historyLayers.length - index }}</span>
+            <span class="layer-size mono-xs">{{ formatBytes(layer.size) }}</span>
+            <span class="layer-date muted-text xs-strong">{{ formatDate(layer.created) }}</span>
+          </div>
+          <div class="layer-command mono-xs">{{ layer.createdBy || '—' }}</div>
+          <div v-if="layer.tags.length" class="layer-tags">
+            <span v-for="tag in layer.tags" :key="tag" class="layer-tag">{{ tag }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="dlg-footer">
+        <button class="btn btn-outline" @click="historyOpen = false">{{ t('cancel') }}</button>
       </div>
     </Dialog>
 

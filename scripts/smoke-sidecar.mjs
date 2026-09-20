@@ -1,5 +1,6 @@
 // 端到端冒烟测试：直接以 framed 协议驱动 Go sidecar，覆盖握手、连接（含 DBX 隧道复用）、
-// 资源列举、容器日志流、只读文件浏览与容器内交互式终端（双向 binary channel）。
+// 资源列举、容器日志流、只读文件浏览、容器内交互式终端（双向 binary channel），
+// 以及 system df / 镜像打标签 / 分层历史 / 容器重命名。
 //
 // 用法：
 //   node scripts/smoke-sidecar.mjs <sidecar 可执行文件> [docker 端点] [容器名]
@@ -7,6 +8,10 @@
 //   node scripts/smoke-sidecar.mjs dist/verify-sidecar.exe http://127.0.0.1:2375 dbx-mon-test
 //
 // 需要本地可访问的 Docker Engine。找不到容器时会自动跳过依赖容器的用例。
+//
+// 对机器状态的改动：
+//   - 容器重命名会在 finally 中还原原名；镜像打标签会在 finally 中撤销该标签。
+//   - prune 会真实删除资源，因此默认跳过，只有设置 SMOKE_ALLOW_PRUNE=1 才执行。
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -218,7 +223,7 @@ try {
     const result = await client.request('plugin/initialize', { host: { protocolVersions: [1] } });
     assert(result.protocolVersion === 1, `unexpected protocolVersion ${result.protocolVersion}`);
     assert(result.plugin?.id === 'io.dbx.docker', `unexpected plugin id ${result.plugin?.id}`);
-    assert(result.plugin?.version === '0.1.2', `unexpected plugin version ${result.plugin?.version}`);
+    assert(result.plugin?.version === '0.1.3', `unexpected plugin version ${result.plugin?.version}`);
     return `${result.plugin.id} ${result.plugin.version}`;
   });
 
@@ -426,6 +431,83 @@ try {
       await client.request('connection/disconnect', { connection: connectionPayload(id) });
       assert(message.includes('read-only'), `expected the read-only guard, got: ${message || '(no error)'}`);
       return 'guard fired';
+    });
+  }
+
+  await check('docker/getDiskUsage', async () => {
+    const usage = await client.request('docker/getDiskUsage', { connectionId: CONNECTION_ID });
+    assert(typeof usage.layersSize === 'number', 'missing layersSize');
+    for (const key of ['images', 'containers', 'volumes', 'buildCache', 'networks']) {
+      assert(usage[key] && typeof usage[key].count === 'number', `missing ${key} category`);
+    }
+    return `images ${usage.images.count} / volumes ${usage.volumes.count} / networks ${usage.networks.count}`;
+  });
+
+  await check('docker/tagImage + docker/untagImage', async () => {
+    const images = await client.request('docker/listImages', { connectionId: CONNECTION_ID });
+    const tagged = images.find((item) => (item.repoTags || []).some((tag) => tag && tag !== '<none>:<none>'));
+    assert(tagged, 'no tagged image available for the tag test');
+    const reference = `dbx-smoke-tag:probe`;
+    try {
+      const result = await client.request('docker/tagImage', {
+        connectionId: CONNECTION_ID,
+        imageId: tagged.id,
+        repository: 'dbx-smoke-tag',
+        tag: 'probe',
+      });
+      assert(result.reference === reference, `unexpected reference ${result.reference}`);
+      const after = await client.request('docker/listImages', { connectionId: CONNECTION_ID });
+      const hasTag = after.some((item) => item.id === tagged.id && (item.repoTags || []).includes(reference));
+      assert(hasTag, 'the new tag is missing from the image list');
+      return reference;
+    } finally {
+      // 无论断言是否通过都摘掉探测标签，保证机器状态干净。
+      await client.request('docker/untagImage', { connectionId: CONNECTION_ID, reference }).catch(() => {});
+    }
+  });
+
+  await check('docker/imageHistory', async () => {
+    const images = await client.request('docker/listImages', { connectionId: CONNECTION_ID });
+    const target = images.find((item) => (item.repoTags || []).some((tag) => tag && tag !== '<none>:<none>'));
+    assert(target, 'no tagged image available for the history test');
+    const layers = await client.request('docker/imageHistory', { connectionId: CONNECTION_ID, imageId: target.id });
+    assert(Array.isArray(layers) && layers.length > 0, 'expected at least one layer');
+    assert(typeof layers[0].createdBy === 'string', 'missing createdBy');
+    return `${layers.length} layers`;
+  });
+
+  // 清理类用例会真实删除资源，因此默认跳过；需要验证时显式设置 SMOKE_ALLOW_PRUNE=1。
+  if (process.env.SMOKE_ALLOW_PRUNE === '1') {
+    await check('docker/prune (containers)', async () => {
+      const result = await client.request('docker/prune', { connectionId: CONNECTION_ID, target: 'containers', all: false });
+      assert(Array.isArray(result.deleted), 'expected a deleted list');
+      assert(typeof result.spaceReclaimed === 'number', 'missing spaceReclaimed');
+      return `${result.deleted.length} removed`;
+    });
+  } else {
+    console.log('  skip docker/prune (set SMOKE_ALLOW_PRUNE=1 to allow deleting stopped containers)');
+  }
+
+  if (container) {
+    await check('docker/renameContainer round-trip', async () => {
+      const renamed = `${containerName}-smoke`;
+      try {
+        const result = await client.request('docker/renameContainer', {
+          connectionId: CONNECTION_ID,
+          containerId: container.id,
+          name: renamed,
+        });
+        assert(result.name === renamed, 'unexpected container name');
+        const containers = await client.request('docker/listContainers', { connectionId: CONNECTION_ID, all: true });
+        const match = containers.find((item) => item.id === container.id);
+        assert(match?.names?.some((name) => name.replace(/^\//, '') === renamed), 'rename was not reflected in the list');
+        return `${containerName} → ${renamed}`;
+      } finally {
+        // 还原原名，避免影响后续手工验证。
+        await client
+          .request('docker/renameContainer', { connectionId: CONNECTION_ID, containerId: container.id, name: containerName })
+          .catch(() => {});
+      }
     });
   }
 

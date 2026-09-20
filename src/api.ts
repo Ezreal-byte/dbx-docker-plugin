@@ -11,12 +11,16 @@ import type {
   DockerCreateNetworkRequest,
   DockerCreateNetworkResult,
   DockerCreateVolumeRequest,
+  DockerDiskUsage,
   DockerEngineDetails,
   DockerFileEntry,
   DockerFilePreview,
   DockerImage,
+  DockerImageLayer,
   DockerLogOptions,
   DockerNetwork,
+  DockerPruneResult,
+  DockerPruneTarget,
   DockerRegistryAuth,
   DockerVolume,
 } from './types';
@@ -115,6 +119,30 @@ export function previewContainerFile(connectionId: string, containerId: string, 
 
 export function getEngineDetails(connectionId: string) {
   return invoke<DockerEngineDetails>(connectionId, 'docker/getEngineDetails');
+}
+
+export function getDiskUsage(connectionId: string) {
+  return invoke<DockerDiskUsage>(connectionId, 'docker/getDiskUsage');
+}
+
+export function prune(connectionId: string, target: DockerPruneTarget, all = false) {
+  return invoke<DockerPruneResult>(connectionId, 'docker/prune', { target, all });
+}
+
+export function renameContainer(connectionId: string, containerId: string, name: string) {
+  return invoke<{ success: boolean; name: string }>(connectionId, 'docker/renameContainer', { containerId, name });
+}
+
+export function tagImage(connectionId: string, imageId: string, repository: string, tag: string) {
+  return invoke<{ success: boolean; reference: string }>(connectionId, 'docker/tagImage', { imageId, repository, tag });
+}
+
+export function untagImage(connectionId: string, reference: string) {
+  return invoke<{ success: boolean }>(connectionId, 'docker/untagImage', { reference });
+}
+
+export function imageHistory(connectionId: string, imageId: string) {
+  return invoke<DockerImageLayer[]>(connectionId, 'docker/imageHistory', { imageId });
 }
 
 export interface ConnectionInfoResult {

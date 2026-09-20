@@ -192,6 +192,38 @@ export interface DockerFilePreview {
   binary: boolean;
 }
 
+export interface DockerDiskUsageCategory {
+  count: number;
+  size: number;
+  reclaimable: number;
+}
+
+export interface DockerDiskUsage {
+  layersSize: number;
+  images: DockerDiskUsageCategory;
+  containers: DockerDiskUsageCategory;
+  volumes: DockerDiskUsageCategory;
+  buildCache: DockerDiskUsageCategory;
+  /** 只统计数量：Docker 的 /system/df 不报告网络占用。 */
+  networks: DockerDiskUsageCategory;
+}
+
+export type DockerPruneTarget = "containers" | "images" | "volumes" | "networks";
+
+export interface DockerPruneResult {
+  deleted: string[];
+  spaceReclaimed: number;
+}
+
+export interface DockerImageLayer {
+  id: string;
+  created: number;
+  createdBy: string;
+  size: number;
+  comment: string;
+  tags: string[];
+}
+
 export interface DockerStreamEvent {
   sessionId: string;
   chunk: string;

@@ -184,3 +184,35 @@ type DockerFilePreview struct {
 	Truncated bool   `json:"truncated"`
 	Binary    bool   `json:"binary"`
 }
+
+// ---------- system df / prune ----------
+
+type DockerDiskUsageCategory struct {
+	Count       int   `json:"count"`
+	Size        int64 `json:"size"`
+	Reclaimable int64 `json:"reclaimable"`
+}
+
+type DockerDiskUsage struct {
+	LayersSize int64                   `json:"layersSize"`
+	Images     DockerDiskUsageCategory `json:"images"`
+	Containers DockerDiskUsageCategory `json:"containers"`
+	Volumes    DockerDiskUsageCategory `json:"volumes"`
+	BuildCache DockerDiskUsageCategory `json:"buildCache"`
+	// Networks 只统计数量：Docker 的 /system/df 不报告网络占用。
+	Networks DockerDiskUsageCategory `json:"networks"`
+}
+
+type DockerPruneResult struct {
+	Deleted        []string `json:"deleted"`
+	SpaceReclaimed int64    `json:"spaceReclaimed"`
+}
+
+type DockerImageLayer struct {
+	ID        string   `json:"id"`
+	Created   int64    `json:"created"`
+	CreatedBy string   `json:"createdBy"`
+	Size      int64    `json:"size"`
+	Comment   string   `json:"comment"`
+	Tags      []string `json:"tags"`
+}

@@ -28,7 +28,8 @@ interface DbxPlugin {
   onContext(fn: (context: PluginContext) => void): () => void;
   onBinary(fn: (payload: { channel: string; data: Uint8Array }) => void): () => void;
   sendBinary?(channel: string, data: string | Uint8Array | ArrayBuffer): Promise<unknown>;
-  saveFile?(options: { suggestedName?: string; data?: ArrayBuffer }): Promise<unknown>;
+  /** 桌面宿主弹原生保存对话框并回传绝对路径；Web 宿主回传文件名。取消时回传 null。 */
+  saveFile?(options: { suggestedName?: string; data?: ArrayBuffer }): Promise<{ path?: string } | null>;
   copy?(text: string): Promise<unknown>;
 }
 

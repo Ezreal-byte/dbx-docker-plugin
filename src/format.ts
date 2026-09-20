@@ -24,3 +24,19 @@ export async function copyToClipboard(text: string): Promise<void> {
   }
   await navigator.clipboard.writeText(text);
 }
+
+/**
+ * 取保存路径所在目录；兼容 Windows 反斜杠与 POSIX 斜杠。
+ * 输入已是目录（带尾部斜杠）时返回目录本身；只有文件名（Web 宿主）时原样返回。
+ */
+export function directoryOf(path: string): string {
+  const trimmed = path.replace(/([\\/])+$/, '');
+  if (trimmed && trimmed !== path) return trimmed;
+  const index = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'));
+  return index > 0 ? trimmed.slice(0, index) : trimmed;
+}
+
+/** 桌面宿主回传绝对路径，Web 宿主只回传文件名。 */
+export function savedPathKind(path: string, fileName: string): 'desktop' | 'web' {
+  return path === fileName || !/[\\/]/.test(path) ? 'web' : 'desktop';
+}
