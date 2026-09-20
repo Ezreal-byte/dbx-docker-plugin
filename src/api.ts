@@ -93,6 +93,18 @@ export function stopStream(connectionId: string, sessionId: string) {
   return invoke<{ success: boolean }>(connectionId, 'docker/stopStream', { sessionId });
 }
 
+export function startExec(connectionId: string, containerId: string, sessionId: string, command: string[], cols: number, rows: number) {
+  return invoke<{ sessionId: string }>(connectionId, 'docker/startExec', { containerId, sessionId, command, cols, rows });
+}
+
+export function execResize(connectionId: string, sessionId: string, cols: number, rows: number) {
+  return invoke<{ success: boolean }>(connectionId, 'docker/execResize', { sessionId, cols, rows });
+}
+
+export function stopExec(connectionId: string, sessionId: string) {
+  return invoke<{ success: boolean }>(connectionId, 'docker/stopExec', { sessionId });
+}
+
 export function listContainerFiles(connectionId: string, containerId: string, path: string) {
   return invoke<DockerFileEntry[]>(connectionId, 'docker/listContainerFiles', { containerId, path });
 }

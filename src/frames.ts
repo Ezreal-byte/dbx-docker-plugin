@@ -16,6 +16,16 @@ export interface LogHeader {
   dataLen?: number;
 }
 
+// 容器内终端（docker exec）帧头；上行只带 kind，下行带 status/exitCode。
+export interface ExecHeader {
+  sessionId: string;
+  kind?: 'stdin';
+  status?: 'running' | 'done' | 'error';
+  error?: string;
+  exitCode?: number;
+  dataLen?: number;
+}
+
 export interface DecodedFrame<T> {
   kind: number; // 0=JSON 头 1=数据块
   header: T;

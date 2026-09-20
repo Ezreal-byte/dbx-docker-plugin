@@ -3,7 +3,7 @@
 // 差异：api.docker* → 本插件 bridge.invoke('docker/*')；Tauri 事件流 → binary channel；
 // ui/* 组件 → 本地组件 + .docker-* CSS（style.css）；read_only/is_production 从后端快照获取。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { currentLocale, getPlugin } from './bridge';
+import { currentLocale, getPlugin, type PluginEnvPayload } from './bridge';
 import { setLocale, t } from './i18n';
 import * as api from './api';
 import { initStreams, registerExportStream, registerTransferStream, startLogStream, unregisterStream, type ExportProgress } from './streams';
@@ -36,10 +36,11 @@ import Switch from './components/Switch.vue';
 import LineChart from './components/LineChart.vue';
 import JsonTree from './components/JsonTree.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
+import ContainerTerminal from './components/ContainerTerminal.vue';
 
 type ResourceKind = 'containers' | 'images' | 'volumes' | 'networks';
 type ContainerFilter = 'all' | 'running' | 'stopped';
-type DetailTab = 'overview' | 'logs' | 'monitoring' | 'files';
+type DetailTab = 'overview' | 'logs' | 'monitoring' | 'files' | 'terminal';
 type TrendPoint = DockerContainerStats;
 type SortDirection = 'asc' | 'desc';
 
@@ -157,6 +158,27 @@ function isRunning(container: DockerContainer): boolean {
 
 function isPaused(container: DockerContainer): boolean {
   return container.state.toLowerCase() === 'paused';
+}
+
+// 终端标签只在容器运行时出现：docker exec 对已停止容器没有意义。
+const detailTabs = computed<DetailTab[]>(() => {
+  const tabs: DetailTab[] = ['overview', 'logs', 'monitoring', 'files'];
+  if (selectedContainer.value && isRunning(selectedContainer.value)) tabs.push('terminal');
+  return tabs;
+});
+
+const terminalTabRequested = ref(false);
+
+async function openTerminalTab() {
+  const container = selectedContainer.value;
+  if (!container || isReadOnly.value || !isRunning(container)) return;
+  if (terminalTabRequested.value) {
+    detailTab.value = 'terminal';
+    return;
+  }
+  if (isProduction.value && !(await requestConfirmation(t('confirmTerminal', { name: containerName(container) })))) return;
+  terminalTabRequested.value = true;
+  detailTab.value = 'terminal';
 }
 
 function formatPorts(container: DockerContainer): string {
@@ -424,6 +446,7 @@ function toggleProject(project: string) {
 async function openDetail(container: DockerContainer) {
   selectedContainerId.value = container.id;
   detailTab.value = 'overview';
+  terminalTabRequested.value = false;
   inspect.value = (await api.inspectContainer(connectionId.value, container.id)) as Record<string, any>;
   trend.value = [];
   restartDetailSampling();
@@ -433,6 +456,8 @@ async function closeDetail() {
   stopDetailSampling();
   await stopLogs();
   selectedContainerId.value = '';
+  detailTab.value = 'overview';
+  terminalTabRequested.value = false;
   inspect.value = {};
   fileEntries.value = [];
   filePreview.value = undefined;
@@ -1120,10 +1145,24 @@ watch(dangerOpen, (open) => {
   if (!open && dangerResolve) settleConfirmation(false);
 });
 
+// 宿主在 window.dbxPlugin.locale 上暴露当前语言，但该值只在 init 消息到达后
+// 才是真实值（沙箱里的初值是 "en"）。因此必须先 await ready 再取语言，
+// 并订阅 dbx-plugin-init / dbx-plugin-env 以跟随 DBX 的语言切换。
+function applyHostLocale(payload?: PluginEnvPayload) {
+  const next = typeof payload?.locale === 'string' ? payload.locale : currentLocale();
+  setLocale(next);
+}
+
+function handleHostEnv(event: Event) {
+  applyHostLocale((event as CustomEvent<PluginEnvPayload>).detail);
+}
+
 onMounted(async () => {
   const plugin = getPlugin();
-  setLocale(currentLocale());
+  document.addEventListener('dbx-plugin-init', handleHostEnv);
+  document.addEventListener('dbx-plugin-env', handleHostEnv);
   await plugin.ready;
+  applyHostLocale();
   const context = plugin.context;
   connectionId.value = context.connectionId || context.connection?.id || '';
   initStreams(connectionId.value);
@@ -1138,6 +1177,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener('dbx-plugin-init', handleHostEnv);
+  document.removeEventListener('dbx-plugin-env', handleHostEnv);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   if (listStatsTimer) window.clearInterval(listStatsTimer);
   if (resourceRefreshTimer) window.clearInterval(resourceRefreshTimer);
@@ -1208,7 +1249,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="detail-tabs">
-          <button v-for="tab in ['overview', 'logs', 'monitoring', 'files'] as DetailTab[]" :key="tab" class="docker-detail-tab" :class="{ active: detailTab === tab }" @click="detailTab = tab">
+          <button v-for="tab in detailTabs" :key="tab" class="docker-detail-tab" :class="{ active: detailTab === tab }" @click="tab === 'terminal' ? openTerminalTab() : (detailTab = tab)">
             {{ t(`detail.${tab}`) }}
           </button>
         </div>
@@ -1281,6 +1322,17 @@ onUnmounted(() => {
           <div v-else-if="detailTab === 'monitoring'" class="monitoring-grid">
             <LineChart title="CPU %" :data="cpuSeries[0].data" :color="cpuSeries[0].color" :value-formatter="(value) => `${value.toFixed(1)}%`" />
             <LineChart :title="`${t('memory')} %`" :data="memorySeries[0].data" :color="memorySeries[0].color" :value-formatter="(value) => `${value.toFixed(1)}%`" />
+          </div>
+
+          <div v-else-if="detailTab === 'terminal'" class="terminal-pane-wrapper">
+            <ContainerTerminal
+              v-if="terminalTabRequested && selectedContainer"
+              :key="selectedContainer.id"
+              :connection-id="connectionId"
+              :container-id="selectedContainer.id"
+              :read-only="isReadOnly"
+              :running="isRunning(selectedContainer)"
+            />
           </div>
 
           <div v-else class="files-pane">

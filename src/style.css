@@ -190,6 +190,20 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .chart-grid { stroke: color-mix(in srgb, var(--muted-foreground) 25%, transparent); stroke-width: 0.5; }
 .chart-label { font-size: 8px; fill: var(--muted-foreground); font-family: var(--mono-font); }
 
+/* ---------- 容器内终端 ---------- */
+.terminal-pane-wrapper { height: 100%; min-height: 28rem; }
+.terminal-pane { display: flex; flex-direction: column; height: 100%; min-height: 28rem; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.terminal-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px; }
+.terminal-command { width: 14rem; font-family: var(--mono-font); }
+.terminal-status { font-size: 0.75rem; color: var(--muted-foreground); }
+.terminal-status-running { color: #16a34a; }
+.terminal-status-error { color: var(--destructive); }
+.terminal-hint { margin-left: auto; font-size: 0.7rem; color: var(--muted-foreground); }
+.terminal-error { margin: 0; padding: 8px 12px; }
+.terminal-host { flex: 1; min-height: 0; overflow: hidden; background: #09090b; padding: 8px; }
+.terminal-host .xterm { height: 100%; }
+.terminal-host .xterm-viewport { background: transparent !important; }
+
 .files-pane { display: grid; grid-template-columns: minmax(20rem, 36%) 1fr; height: 100%; min-height: 28rem; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
 .files-list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .files-toolbar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px; }

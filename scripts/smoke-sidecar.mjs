@@ -1,41 +1,446 @@
+// 端到端冒烟测试：直接以 framed 协议驱动 Go sidecar，覆盖握手、连接（含 DBX 隧道复用）、
+// 资源列举、容器日志流、只读文件浏览与容器内交互式终端（双向 binary channel）。
+//
+// 用法：
+//   node scripts/smoke-sidecar.mjs <sidecar 可执行文件> [docker 端点] [容器名]
+// 示例：
+//   node scripts/smoke-sidecar.mjs dist/verify-sidecar.exe http://127.0.0.1:2375 dbx-mon-test
+//
+// 需要本地可访问的 Docker Engine。找不到容器时会自动跳过依赖容器的用例。
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-const executable = process.argv[2];
-if (!executable) throw new Error('Usage: node scripts/smoke-sidecar.mjs <sidecar executable>');
-
-const child = spawn(executable, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-const request = Buffer.from(JSON.stringify({
-  jsonrpc: '2.0', id: 1, method: 'plugin/initialize',
-  params: { host: { protocolVersions: [1] } },
-}));
-const frame = Buffer.alloc(5 + request.length);
-frame[0] = 0;
-frame.writeUInt32BE(request.length, 1);
-request.copy(frame, 5);
-
-let pending = Buffer.alloc(0);
-let stderr = '';
-child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-const response = new Promise((resolve, reject) => {
-  const timeout = setTimeout(() => { child.kill(); reject(new Error('Sidecar handshake timed out')); }, 10_000);
-  child.on('error', (error) => { clearTimeout(timeout); reject(error); });
-  child.on('exit', (code) => {
-    if (pending.length < 5) { clearTimeout(timeout); reject(new Error(`Sidecar exited ${code}: ${stderr}`)); }
-  });
-  child.stdout.on('data', (chunk) => {
-    pending = Buffer.concat([pending, chunk]);
-    if (pending.length < 5) return;
-    const length = pending.readUInt32BE(1);
-    if (pending.length < 5 + length) return;
-    clearTimeout(timeout);
-    if (pending[0] !== 0) reject(new Error('Expected a JSON protocol frame'));
-    else resolve(JSON.parse(pending.subarray(5, 5 + length).toString('utf8')));
-  });
-});
-
-child.stdin.end(frame);
-const result = await response;
-if (result.error || result.result?.protocolVersion !== 1 || result.result?.plugin?.id !== 'io.dbx.docker' || result.result?.plugin?.version !== '0.1.1') {
-  throw new Error(`Unexpected sidecar handshake: ${JSON.stringify(result)}`);
+function defaultExecutable() {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  for (const candidate of ['dist/verify-sidecar.exe', 'dist/verify-sidecar', 'backend/verify-sidecar.exe', 'backend/verify-sidecar']) {
+    const path = join(root, candidate);
+    if (existsSync(path)) return path;
+  }
+  return undefined;
 }
-console.log('Sidecar handshake passed');
+
+const executable = process.argv[2] || defaultExecutable();
+if (!executable) {
+  throw new Error('Usage: node scripts/smoke-sidecar.mjs <sidecar executable> [docker endpoint] [container name]');
+}
+if (!existsSync(executable)) throw new Error(`Sidecar executable not found: ${executable}`);
+
+const endpoint = parseEndpoint(process.argv[3] || 'http://127.0.0.1:2375');
+const containerName = process.argv[4] || 'dbx-mon-test';
+
+const FRAME_JSON = 0;
+const FRAME_BINARY = 1;
+const CONNECTION_ID = 'smoke-connection';
+
+const checks = [];
+let failures = 0;
+
+function parseEndpoint(value) {
+  const url = new URL(value);
+  const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 2376 : 2375;
+  return { protocol: url.protocol.replace(':', ''), host: url.hostname, port };
+}
+
+function check(name, fn) {
+  return Promise.resolve()
+    .then(fn)
+    .then((detail) => {
+      checks.push({ name, ok: true, detail });
+      console.log(`  ok   ${name}${detail ? ` — ${detail}` : ''}`);
+    })
+    .catch((error) => {
+      failures += 1;
+      checks.push({ name, ok: false, detail: error?.message || String(error) });
+      console.error(`  FAIL ${name} — ${error?.message || error}`);
+    });
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+// ---------- framed 协议客户端 ----------
+
+class SidecarClient {
+  constructor(command) {
+    this.pending = new Map();
+    this.binaryListeners = new Set();
+    this.sequence = 0;
+    this.buffer = Buffer.alloc(0);
+    this.stderr = '';
+    this.exit = undefined;
+    this.child = spawn(command, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child.stderr.on('data', (chunk) => { this.stderr += chunk.toString(); });
+    this.child.on('exit', (code) => { this.exit = code; });
+    this.child.stdout.on('data', (chunk) => {
+      this.buffer = Buffer.concat([this.buffer, chunk]);
+      this.drain();
+    });
+  }
+
+  drain() {
+    while (this.buffer.length >= 5) {
+      const kind = this.buffer[0];
+      const length = this.buffer.readUInt32BE(1);
+      if (this.buffer.length < 5 + length) return;
+      const payload = this.buffer.subarray(5, 5 + length);
+      this.buffer = this.buffer.subarray(5 + length);
+      if (kind === FRAME_JSON) this.handleJSON(payload);
+      else if (kind === FRAME_BINARY) this.handleBinary(payload);
+    }
+  }
+
+  handleJSON(payload) {
+    let message;
+    try {
+      message = JSON.parse(payload.toString('utf8'));
+    } catch {
+      return;
+    }
+    if (message.id === undefined || message.id === null) return;
+    const key = JSON.stringify(message.id);
+    const handler = this.pending.get(key);
+    if (!handler) return;
+    this.pending.delete(key);
+    if (message.error) handler.reject(new Error(`${message.error.message} (code ${message.error.code})`));
+    else handler.resolve(message.result);
+  }
+
+  handleBinary(payload) {
+    if (payload.length < 2) return;
+    const channelLength = payload.readUInt16BE(0);
+    if (payload.length < 2 + channelLength) return;
+    const channel = payload.subarray(2, 2 + channelLength).toString('utf8');
+    const data = payload.subarray(2 + channelLength);
+    for (const listener of this.binaryListeners) listener({ channel, data });
+  }
+
+  writeFrame(kind, payload) {
+    const header = Buffer.alloc(5);
+    header[0] = kind;
+    header.writeUInt32BE(payload.length, 1);
+    this.child.stdin.write(Buffer.concat([header, payload]));
+  }
+
+  request(method, params, timeoutMs = 30_000) {
+    this.sequence += 1;
+    const id = this.sequence;
+    const payload = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+    const promise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(JSON.stringify(id));
+        reject(new Error(`RPC ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(JSON.stringify(id), {
+        resolve: (value) => { clearTimeout(timeout); resolve(value); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+    });
+    this.writeFrame(FRAME_JSON, payload);
+    return promise;
+  }
+
+  /** 发送 binary channel 数据：帧头 [u16 channelLen][channel][data]。 */
+  sendBinary(channel, data) {
+    const channelBytes = Buffer.from(channel, 'utf8');
+    const header = Buffer.alloc(2);
+    header.writeUInt16BE(channelBytes.length, 0);
+    this.writeFrame(FRAME_BINARY, Buffer.concat([header, channelBytes, Buffer.from(data)]));
+  }
+
+  onBinary(listener) {
+    this.binaryListeners.add(listener);
+    return () => this.binaryListeners.delete(listener);
+  }
+
+  close() {
+    try {
+      this.child.stdin.end();
+    } catch {
+      // 进程可能已退出。
+    }
+    this.child.kill();
+  }
+}
+
+// ---------- 业务帧编解码（插件自定义：1 字节 kind + 4 字节头长度 + JSON 头 + 数据）----------
+
+function decodePluginFrame(bytes) {
+  if (bytes.length < 5) return null;
+  const headerLength = bytes.readUInt32BE(1);
+  if (bytes.length < 5 + headerLength) return null;
+  let header;
+  try {
+    header = JSON.parse(bytes.subarray(5, 5 + headerLength).toString('utf8'));
+  } catch {
+    return null;
+  }
+  return { kind: bytes[0], header, data: bytes.subarray(5 + headerLength) };
+}
+
+function encodeExecInput(sessionId, text) {
+  const header = Buffer.from(JSON.stringify({ sessionId, kind: 'stdin' }));
+  const data = Buffer.from(text);
+  const frame = Buffer.alloc(5 + header.length + data.length);
+  frame[0] = 1;
+  frame.writeUInt32BE(header.length, 1);
+  header.copy(frame, 5);
+  data.copy(frame, 5 + header.length);
+  return frame;
+}
+
+function connectionPayload(id, overrides = {}) {
+  return {
+    id,
+    name: id,
+    host: endpoint.host,
+    port: endpoint.port,
+    read_only: false,
+    color: '',
+    external_config: { protocol: endpoint.protocol, api_version: 'auto' },
+    connection_secrets: {},
+    transport_layers: [],
+    ...overrides,
+  };
+}
+
+// ---------- 用例 ----------
+
+const client = new SidecarClient(executable);
+let container = null;
+
+try {
+  console.log('Sidecar smoke test');
+
+  await check('handshake', async () => {
+    const result = await client.request('plugin/initialize', { host: { protocolVersions: [1] } });
+    assert(result.protocolVersion === 1, `unexpected protocolVersion ${result.protocolVersion}`);
+    assert(result.plugin?.id === 'io.dbx.docker', `unexpected plugin id ${result.plugin?.id}`);
+    assert(result.plugin?.version === '0.1.2', `unexpected plugin version ${result.plugin?.version}`);
+    return `${result.plugin.id} ${result.plugin.version}`;
+  });
+
+  await check('connection/test (direct endpoint)', async () => {
+    const result = await client.request('connection/test', {
+      connection: connectionPayload(CONNECTION_ID),
+      runtime: { host: endpoint.host, port: endpoint.port },
+    });
+    assert(result.success === true, `connection/test failed: ${JSON.stringify(result)}`);
+    return result.message;
+  });
+
+  await check('DBX tunnel reuse (transport_layers + runtime loopback)', async () => {
+    const id = 'smoke-tunnel';
+    const result = await client.request('connection/test', {
+      // 逻辑端点是不可达的远端主机，实际拨号必须走宿主给出的 runtime 回环端点。
+      connection: connectionPayload(id, {
+        host: 'docker.example.invalid',
+        port: 2375,
+        transport_layers: [{ type: 'ssh', enabled: true, id: 'hop-1', name: 'hop-1' }],
+      }),
+      runtime: { host: endpoint.host, port: endpoint.port },
+    });
+    assert(result.success === true, `tunnel connection/test failed: ${JSON.stringify(result)}`);
+    await client.request('connection/connect', {
+      connection: connectionPayload(id, {
+        host: 'docker.example.invalid',
+        port: 2375,
+        transport_layers: [{ type: 'ssh', enabled: true, id: 'hop-1', name: 'hop-1' }],
+      }),
+      runtime: { host: endpoint.host, port: endpoint.port },
+    });
+    await client.request('docker/getConnectionInfo', { connectionId: id });
+    await client.request('connection/disconnect', { connection: connectionPayload(id) });
+    return 'dialed runtime endpoint through tunnel layer';
+  });
+
+  await check('remote plain HTTP without tunnel is rejected', async () => {
+    let message = '';
+    try {
+      await client.request('connection/test', {
+        connection: connectionPayload('smoke-insecure', { host: 'docker.example.invalid', port: 2375 }),
+        runtime: { host: '', port: 0 },
+      });
+    } catch (error) {
+      message = error.message;
+    }
+    assert(message.includes('Remote Docker HTTP is disabled'), `expected the insecure-HTTP guard, got: ${message || '(no error)'}`);
+    return 'guard fired';
+  });
+
+  await check('connection/connect', async () => {
+    const result = await client.request('connection/connect', {
+      connection: connectionPayload(CONNECTION_ID),
+      runtime: { host: endpoint.host, port: endpoint.port },
+    });
+    assert(result.success === true, 'connect failed');
+  });
+
+  await check('docker/getConnectionInfo', async () => {
+    const result = await client.request('docker/getConnectionInfo', { connectionId: CONNECTION_ID });
+    assert(result.success === true, 'getConnectionInfo failed');
+    assert(result.info?.apiVersion, 'missing apiVersion');
+    return `engine ${result.info.engineVersion} / API ${result.info.apiVersion}`;
+  });
+
+  await check('docker/listContainers', async () => {
+    const containers = await client.request('docker/listContainers', { connectionId: CONNECTION_ID, all: true });
+    assert(Array.isArray(containers), 'expected an array');
+    container = containers.find((item) => item.names?.some((name) => name.replace(/^\//, '') === containerName))
+      ?? containers.find((item) => item.state === 'running')
+      ?? null;
+    return `${containers.length} containers`;
+  });
+
+  await check('docker/listImages', async () => {
+    const images = await client.request('docker/listImages', { connectionId: CONNECTION_ID });
+    assert(Array.isArray(images) && images.length > 0, 'expected at least one image');
+    return `${images.length} images`;
+  });
+
+  await check('docker/listVolumes', async () => {
+    const volumes = await client.request('docker/listVolumes', { connectionId: CONNECTION_ID });
+    assert(Array.isArray(volumes), 'expected an array');
+    return `${volumes.length} volumes`;
+  });
+
+  await check('docker/listNetworks', async () => {
+    const networks = await client.request('docker/listNetworks', { connectionId: CONNECTION_ID });
+    assert(Array.isArray(networks) && networks.length > 0, 'expected at least one network');
+    return `${networks.length} networks`;
+  });
+
+  await check('docker/getEngineDetails', async () => {
+    const details = await client.request('docker/getEngineDetails', { connectionId: CONNECTION_ID });
+    assert(details.version?.Version, 'missing version payload');
+    assert(Array.isArray(details.summary?.securityOptions), 'missing summary');
+    return `driver ${details.summary.storageDriver}`;
+  });
+
+  if (!container) {
+    console.log('  skip container-dependent cases (no running container found)');
+  } else {
+    const containerId = container.id;
+
+    await check('docker/listContainerFiles', async () => {
+      const entries = await client.request('docker/listContainerFiles', { connectionId: CONNECTION_ID, containerId, path: '/' });
+      assert(Array.isArray(entries) && entries.length > 0, 'expected directory entries');
+      return `${entries.length} entries`;
+    });
+
+    await check('docker/startLogs + docker/stopStream', async () => {
+      const sessionId = 'smoke-logs';
+      let received = '';
+      let sawRunning = false;
+      const stopListening = client.onBinary(({ channel, data }) => {
+        if (channel !== 'docker-log') return;
+        const frame = decodePluginFrame(data);
+        if (frame?.header?.sessionId !== sessionId) return;
+        if (frame.header.status === 'running') sawRunning = true;
+        if (frame.kind === 1) received += frame.data.toString('utf8');
+      });
+      try {
+        await client.request('docker/startLogs', {
+          connectionId: CONNECTION_ID,
+          containerId,
+          sessionId,
+          options: { tail: 20, timestamps: false },
+        });
+        // 容器可能本就没有历史输出，因此断言「流已挂上」而非「一定有字节」。
+        const deadline = Date.now() + 8_000;
+        while (!sawRunning && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+        assert(sawRunning, 'log stream never reported a running frame');
+        await client.request('docker/stopStream', { connectionId: CONNECTION_ID, sessionId });
+      } finally {
+        stopListening();
+      }
+      return `${received.length} log bytes`;
+    });
+
+    await check('docker/startExec + binary stdin + execResize + stopExec', async () => {
+      const sessionId = 'smoke-exec';
+      const marker = 'dbx-smoke-exec-ok';
+      let output = '';
+      let done = false;
+      const stopListening = client.onBinary(({ channel, data }) => {
+        if (channel !== 'docker-exec') return;
+        const frame = decodePluginFrame(data);
+        if (frame?.header?.sessionId !== sessionId) return;
+        if (frame.kind === 1) output += frame.data.toString('utf8');
+        else if (frame.header.status === 'done' || frame.header.status === 'error') done = true;
+      });
+      try {
+        const started = await client.request('docker/startExec', {
+          connectionId: CONNECTION_ID,
+          containerId,
+          sessionId,
+          command: ['/bin/sh'],
+          cols: 100,
+          rows: 30,
+        });
+        assert(started.sessionId === sessionId, 'unexpected sessionId');
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        client.sendBinary('docker-exec', encodeExecInput(sessionId, `echo ${marker}\n`));
+
+        const deadline = Date.now() + 10_000;
+        while (!output.includes(marker) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+        assert(output.includes(marker), `marker not found in exec output: ${JSON.stringify(output.slice(-200))}`);
+
+        const resized = await client.request('docker/execResize', { connectionId: CONNECTION_ID, sessionId, cols: 120, rows: 40 });
+        assert(resized.success === true, 'execResize did not report success');
+
+        // 退出 shell 后应收到 done 帧。
+        client.sendBinary('docker-exec', encodeExecInput(sessionId, 'exit\n'));
+        const exitDeadline = Date.now() + 8_000;
+        while (!done && Date.now() < exitDeadline) await new Promise((resolve) => setTimeout(resolve, 100));
+        assert(done, 'no terminal done frame after exit');
+      } finally {
+        stopListening();
+        await client.request('docker/stopExec', { connectionId: CONNECTION_ID, sessionId }).catch(() => {});
+      }
+      return `${output.length} terminal bytes, done frame received`;
+    });
+
+    await check('read-only connection blocks terminal', async () => {
+      const id = 'smoke-readonly';
+      await client.request('connection/connect', {
+        connection: connectionPayload(id, { read_only: true }),
+        runtime: { host: endpoint.host, port: endpoint.port },
+      });
+      let message = '';
+      try {
+        await client.request('docker/startExec', {
+          connectionId: id,
+          containerId,
+          sessionId: 'smoke-readonly-exec',
+          command: ['/bin/sh'],
+          cols: 80,
+          rows: 24,
+        });
+      } catch (error) {
+        message = error.message;
+      }
+      await client.request('connection/disconnect', { connection: connectionPayload(id) });
+      assert(message.includes('read-only'), `expected the read-only guard, got: ${message || '(no error)'}`);
+      return 'guard fired';
+    });
+  }
+
+  await check('connection/disconnect', async () => {
+    const result = await client.request('connection/disconnect', { connection: connectionPayload(CONNECTION_ID) });
+    assert(result.success === true, 'disconnect failed');
+  });
+} finally {
+  client.close();
+}
+
+console.log('');
+if (failures > 0) {
+  console.error(`Smoke test failed: ${failures} of ${checks.length} checks failed.`);
+  process.exitCode = 1;
+} else {
+  console.log(`Smoke test passed: ${checks.length} checks.`);
+}

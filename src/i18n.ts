@@ -139,6 +139,14 @@ const zh = {
   cancel: '取消',
   confirm: '确认',
   missingConnection: '缺少连接上下文，请从数据库连接打开 Docker 工作台。',
+  terminalCommandPlaceholder: '/bin/sh',
+  terminalOpen: '打开终端',
+  terminalReconnect: '重新连接',
+  terminalHint: 'nano/vim 等全屏程序需要容器自带这些命令；终端会话随标签页关闭而结束。',
+  terminalReadOnly: '此 Docker 连接为只读，不能打开容器终端。',
+  terminalNotRunning: '只有运行中的容器可以打开终端。',
+  terminalClosed: '会话已结束（退出码 {code}）。',
+  confirmTerminal: '这将在容器 {name} 内启动交互式终端，可执行任意命令。确认继续吗？',
   action: {
     start: '启动',
     pause: '暂停',
@@ -148,7 +156,8 @@ const zh = {
     remove: '删除',
   } as Record<string, string>,
   filter: { all: '全部', running: '运行中', stopped: '已停止' } as Record<string, string>,
-  detail: { overview: '概览', logs: '日志', monitoring: '监控', files: '文件' } as Record<string, string>,
+  detail: { overview: '概览', logs: '日志', monitoring: '监控', files: '文件', terminal: '终端' } as Record<string, string>,
+  terminalStatus: { idle: '未连接', starting: '连接中', running: '已连接', closed: '已断开', error: '出错' } as Record<string, string>,
   transferStatus: { running: '进行中', done: '已完成', error: '失败', cancelled: '已取消' } as Record<string, string>,
 };
 
@@ -286,6 +295,14 @@ const en: typeof zh = {
   cancel: 'Cancel',
   confirm: 'Confirm',
   missingConnection: 'Connection context is missing. Open the Docker workbench from a database connection.',
+  terminalCommandPlaceholder: '/bin/sh',
+  terminalOpen: 'Open terminal',
+  terminalReconnect: 'Reconnect',
+  terminalHint: 'Full-screen tools such as nano or vim must exist in the container; the session ends when this tab closes.',
+  terminalReadOnly: 'This Docker connection is read-only; container terminals are disabled.',
+  terminalNotRunning: 'Only running containers can open a terminal.',
+  terminalClosed: 'Session ended (exit code {code}).',
+  confirmTerminal: 'This starts an interactive terminal inside container {name}, which can run any command. Continue?',
   action: {
     start: 'start',
     pause: 'pause',
@@ -295,7 +312,8 @@ const en: typeof zh = {
     remove: 'delete',
   },
   filter: { all: 'All', running: 'Running', stopped: 'Stopped' },
-  detail: { overview: 'Overview', logs: 'Logs', monitoring: 'Monitoring', files: 'Files' },
+  detail: { overview: 'Overview', logs: 'Logs', monitoring: 'Monitoring', files: 'Files', terminal: 'Terminal' },
+  terminalStatus: { idle: 'Not connected', starting: 'Connecting', running: 'Connected', closed: 'Disconnected', error: 'Error' },
   transferStatus: { running: 'Running', done: 'Completed', error: 'Failed', cancelled: 'Cancelled' },
 };
 

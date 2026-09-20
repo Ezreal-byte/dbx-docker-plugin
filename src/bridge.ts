@@ -8,13 +8,26 @@ export interface PluginContext {
   [key: string]: unknown;
 }
 
+export interface PluginTheme {
+  appearance?: 'light' | 'dark';
+  tokens?: Record<string, string>;
+}
+
+/** dbx-plugin-init / dbx-plugin-env 事件 detail 里与本插件相关的字段。 */
+export interface PluginEnvPayload {
+  locale?: string;
+  theme?: PluginTheme;
+}
+
 interface DbxPlugin {
   ready: Promise<unknown>;
   context: PluginContext;
   locale?: string;
+  theme?: PluginTheme;
   invoke<T>(method: string, params: Record<string, unknown>, options?: { timeoutMs: number }): Promise<T>;
   onContext(fn: (context: PluginContext) => void): () => void;
   onBinary(fn: (payload: { channel: string; data: Uint8Array }) => void): () => void;
+  sendBinary?(channel: string, data: string | Uint8Array | ArrayBuffer): Promise<unknown>;
   saveFile?(options: { suggestedName?: string; data?: ArrayBuffer }): Promise<unknown>;
   copy?(text: string): Promise<unknown>;
 }

@@ -14,7 +14,7 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.1.1"
+	pluginVersion = "0.1.2"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。
@@ -29,12 +29,14 @@ type plugin struct {
 	mu        sync.RWMutex
 	sessions  map[string]*session
 	streams   *streamRegistry
+	execs     *execRegistry
 }
 
 func newPlugin() *plugin {
 	return &plugin{
 		sessions: map[string]*session{},
 		streams:  newStreamRegistry(),
+		execs:    newExecRegistry(),
 	}
 }
 
@@ -118,6 +120,12 @@ func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter 
 		return p.startLogs(sess, raw, emitter)
 	case "docker/stopLogs":
 		return p.stopLogs(raw)
+	case "docker/startExec":
+		return p.startExec(sess, raw, emitter)
+	case "docker/execResize":
+		return p.execResize(sess, raw)
+	case "docker/stopExec":
+		return p.stopExec(raw)
 	case "docker/listContainerFiles":
 		return p.listContainerFiles(sess, raw)
 	case "docker/previewContainerFile":
@@ -227,6 +235,7 @@ func (p *plugin) disconnect(v params) (any, error) {
 	}
 	p.mu.Unlock()
 	p.streams.stopByConnection(id)
+	p.execs.stopByConnection(id)
 	return map[string]any{"success": true}, nil
 }
 

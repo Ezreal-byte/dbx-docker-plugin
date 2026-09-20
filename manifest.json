@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "io.dbx.docker",
   "name": "Docker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "ezreal-byte",
   "description": "Docker Engine workbench: containers, images, volumes, networks, logs, files, monitoring and Compose apply.",
   "icon": "assets/plugin.svg",
@@ -24,33 +24,33 @@
       "icon": "assets/plugin.svg",
       "database_type": "docker",
       "fields": [
-        { "key": "display_name", "label": "连接名称", "type": "text", "default": "Docker", "binding": "name" },
+        { "key": "display_name", "label": "Connection name", "type": "text", "default": "Docker", "binding": "name" },
         {
-          "key": "protocol", "label": "协议", "type": "select", "binding": "config", "default": "http",
+          "key": "protocol", "label": "Protocol", "type": "select", "binding": "config", "default": "http",
           "options": [
             { "label": "HTTP (TCP)", "value": "http" },
             { "label": "HTTPS (TCP + TLS)", "value": "https" },
-            { "label": "Unix Socket (本机)", "value": "unix" },
-            { "label": "Unix Socket over SSH (nc)", "value": "unix-over-nc" },
-            { "label": "Unix Socket over SSH (sudo nc)", "value": "unix-over-nc-sudo" }
+            { "label": "Unix socket (local)", "value": "unix" },
+            { "label": "Unix socket over SSH (nc)", "value": "unix-over-nc" },
+            { "label": "Unix socket over SSH (sudo nc)", "value": "unix-over-nc-sudo" }
           ]
         },
-        { "key": "host", "label": "主机", "type": "text", "binding": "host", "placeholder": "127.0.0.1（HTTP/HTTPS 必填）" },
-        { "key": "port", "label": "端口", "type": "number", "binding": "port", "placeholder": "2375 / 2376" },
-        { "key": "socket_path", "label": "Socket 路径", "type": "text", "binding": "config", "default": "/var/run/docker.sock" },
-        { "key": "api_version", "label": "API 版本", "type": "text", "binding": "config", "default": "auto", "placeholder": "auto 或 1.44" },
-        { "key": "allow_insecure_remote_http", "label": "允许不安全的远程 HTTP", "type": "boolean", "binding": "config", "default": false },
-        { "key": "ca_cert_path", "label": "CA 证书路径 (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/ca.pem" },
-        { "key": "client_cert_path", "label": "客户端证书路径 (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/cert.pem" },
-        { "key": "client_key_path", "label": "客户端私钥路径 (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/key.pem" },
-        { "key": "ssh_host", "label": "SSH 主机 (nc 模式)", "type": "text", "binding": "config", "placeholder": "server.example.com" },
-        { "key": "ssh_port", "label": "SSH 端口", "type": "number", "binding": "config", "default": 22 },
-        { "key": "ssh_username", "label": "SSH 用户名", "type": "text", "binding": "config" },
-        { "key": "ssh_password", "label": "SSH 密码", "type": "password", "binding": "secret" },
-        { "key": "ssh_private_key_path", "label": "SSH 私钥路径", "type": "text", "binding": "config", "placeholder": "C:/Users/you/.ssh/id_rsa" },
-        { "key": "ssh_known_hosts_path", "label": "SSH known_hosts 路径", "type": "text", "binding": "config", "placeholder": "默认 ~/.ssh/known_hosts" },
-        { "key": "read_only", "label": "只读模式", "type": "boolean", "binding": "config", "default": false },
-        { "key": "is_production", "label": "生产环境", "type": "boolean", "binding": "config", "default": false }
+        { "key": "host", "label": "Host", "type": "text", "binding": "host", "placeholder": "127.0.0.1 (required for HTTP/HTTPS)" },
+        { "key": "port", "label": "Port", "type": "number", "binding": "port", "placeholder": "2375 / 2376" },
+        { "key": "socket_path", "label": "Socket path", "type": "text", "binding": "config", "default": "/var/run/docker.sock" },
+        { "key": "api_version", "label": "API version", "type": "text", "binding": "config", "default": "auto", "placeholder": "auto or 1.44" },
+        { "key": "allow_insecure_remote_http", "label": "Allow insecure remote HTTP", "type": "boolean", "binding": "config", "default": false },
+        { "key": "ca_cert_path", "label": "CA certificate path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/ca.pem" },
+        { "key": "client_cert_path", "label": "Client certificate path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/cert.pem" },
+        { "key": "client_key_path", "label": "Client key path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/key.pem" },
+        { "key": "ssh_host", "label": "SSH host (nc mode)", "type": "text", "binding": "config", "placeholder": "server.example.com" },
+        { "key": "ssh_port", "label": "SSH port", "type": "number", "binding": "config", "default": 22 },
+        { "key": "ssh_username", "label": "SSH username", "type": "text", "binding": "config" },
+        { "key": "ssh_password", "label": "SSH password", "type": "password", "binding": "secret" },
+        { "key": "ssh_private_key_path", "label": "SSH private key path", "type": "text", "binding": "config", "placeholder": "C:/Users/you/.ssh/id_rsa" },
+        { "key": "ssh_known_hosts_path", "label": "SSH known_hosts path", "type": "text", "binding": "config", "placeholder": "Defaults to ~/.ssh/known_hosts" },
+        { "key": "read_only", "label": "Read-only mode", "type": "boolean", "binding": "config", "default": false },
+        { "key": "is_production", "label": "Production environment", "type": "boolean", "binding": "config", "default": false }
       ],
       "workbench": "io.dbx.docker.workbench",
       "capabilities": ["test", "connect", "disconnect"]
@@ -58,8 +58,49 @@
     {
       "type": "workbench",
       "id": "io.dbx.docker.workbench",
-      "label": "Docker 工作台",
+      "label": "Docker workbench",
       "icon": "assets/plugin.svg"
     }
-  ]
+  ],
+  "localizations": {
+    "zh-CN": {
+      "name": "Docker",
+      "description": "Docker Engine 工作台：容器、镜像、卷、网络、日志、文件、监控与 Compose 应用。",
+      "contributions": {
+        "io.dbx.docker.connection": {
+          "label": "Docker",
+          "fields": {
+            "display_name": { "label": "连接名称" },
+            "protocol": {
+              "label": "协议",
+              "options": {
+                "http": "HTTP (TCP)",
+                "https": "HTTPS (TCP + TLS)",
+                "unix": "Unix Socket（本机）",
+                "unix-over-nc": "Unix Socket over SSH (nc)",
+                "unix-over-nc-sudo": "Unix Socket over SSH (sudo nc)"
+              }
+            },
+            "host": { "label": "主机", "placeholder": "127.0.0.1（HTTP/HTTPS 必填）" },
+            "port": { "label": "端口" },
+            "socket_path": { "label": "Socket 路径" },
+            "api_version": { "label": "API 版本", "placeholder": "auto 或 1.44" },
+            "allow_insecure_remote_http": { "label": "允许不安全的远程 HTTP" },
+            "ca_cert_path": { "label": "CA 证书路径 (HTTPS)" },
+            "client_cert_path": { "label": "客户端证书路径 (HTTPS)" },
+            "client_key_path": { "label": "客户端私钥路径 (HTTPS)" },
+            "ssh_host": { "label": "SSH 主机 (nc 模式)" },
+            "ssh_port": { "label": "SSH 端口" },
+            "ssh_username": { "label": "SSH 用户名" },
+            "ssh_password": { "label": "SSH 密码" },
+            "ssh_private_key_path": { "label": "SSH 私钥路径" },
+            "ssh_known_hosts_path": { "label": "SSH known_hosts 路径", "placeholder": "默认 ~/.ssh/known_hosts" },
+            "read_only": { "label": "只读模式" },
+            "is_production": { "label": "生产环境" }
+          }
+        },
+        "io.dbx.docker.workbench": { "label": "Docker 工作台" }
+      }
+    }
+  }
 }

@@ -3,11 +3,18 @@
 // 这里改为：后端走 binary channel（docker-log / docker-transfer），前端集中订阅后按 sessionId 分发。
 import { onBinary } from './bridge';
 import { stopStream } from './api';
-import { decodeFrame, type LogHeader, type TransferHeader } from './frames';
+import { decodeFrame, type ExecHeader, type LogHeader, type TransferHeader } from './frames';
 import type { DockerStreamEvent, DockerStreamHandle, DockerTransferProgress } from './types';
 
 export interface ExportProgress extends DockerTransferProgress {
   dataChunks: Uint8Array[];
+}
+
+export interface ExecEvent {
+  chunk: string;
+  done: boolean;
+  exitCode?: number;
+  error?: string | null;
 }
 
 interface LogListener {
@@ -27,7 +34,14 @@ interface ExportListener {
   state: ExportProgress;
 }
 
-type Listener = LogListener | TransferListener | ExportListener;
+interface ExecListener {
+  kind: 'exec';
+  onEvent: (event: ExecEvent) => void;
+  // 终端输出可能在帧中间切断多字节字符，必须保留流式解码状态。
+  decoder: TextDecoder;
+}
+
+type Listener = LogListener | TransferListener | ExportListener | ExecListener;
 
 const listeners = new Map<string, Listener>();
 let connectionId = '';
@@ -40,7 +54,26 @@ export function initStreams(connId: string) {
   onBinary(({ channel, data }) => {
     if (channel === 'docker-log') handleLogFrame(data);
     else if (channel === 'docker-transfer') handleTransferFrame(data);
+    else if (channel === 'docker-exec') handleExecFrame(data);
   });
+}
+
+function handleExecFrame(data: Uint8Array) {
+  const frame = decodeFrame<ExecHeader>(data);
+  if (!frame) return;
+  const header = frame.header;
+  if (!header.sessionId) return;
+  const listener = listeners.get(header.sessionId);
+  if (!listener || listener.kind !== 'exec') return;
+  const chunk = frame.kind === 1 ? listener.decoder.decode(frame.data, { stream: true }) : '';
+  const done = header.status === 'done' || header.status === 'error';
+  listener.onEvent({
+    chunk,
+    done,
+    exitCode: header.exitCode,
+    error: header.status === 'error' ? header.error || 'exec stream failed' : null,
+  });
+  if (done) listeners.delete(header.sessionId);
 }
 
 function handleLogFrame(data: Uint8Array) {
@@ -134,6 +167,14 @@ export function registerExportStream(
     dataChunks: [],
   };
   listeners.set(sessionId, { kind: 'export', onEvent, state });
+  return makeHandle(sessionId);
+}
+
+export function registerExecStream(
+  sessionId: string,
+  onEvent: (event: ExecEvent) => void,
+): DockerStreamHandle {
+  listeners.set(sessionId, { kind: 'exec', onEvent, decoder: new TextDecoder() });
   return makeHandle(sessionId);
 }
 
