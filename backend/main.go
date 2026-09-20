@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -40,19 +41,30 @@ func newPlugin() *plugin {
 	}
 }
 
-func (p *plugin) Handle(_ sdk.RequestContext, method string, raw json.RawMessage, emitter *sdk.Emitter) (any, *sdk.PluginError) {
-	v, perr := decodeParams(raw)
-	if perr != nil {
-		return nil, perr
+func (p *plugin) Handle(_ sdk.RequestContext, method string, raw json.RawMessage, emitter *sdk.Emitter) (result any, perr *sdk.PluginError) {
+	// SDK 为每条请求开一个 goroutine，但没有任何 recover：任一处 nil 解引用都会
+	// 打挂整个 sidecar，用户当前的工作台随即全部失效。这里兜住单个方法内的 panic，
+	// 让其退化为一条 RPC 错误，并把堆栈写到 stderr 便于定位。
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("panic in %s: %v\n%s", method, recovered, debug.Stack())
+			result = nil
+			perr = sdk.NewError(-32603, fmt.Sprintf("Internal plugin error in %s: %v", method, recovered))
+		}
+	}()
+
+	v, decodeErr := decodeParams(raw)
+	if decodeErr != nil {
+		return nil, decodeErr
 	}
-	result, err := p.dispatch(method, v, raw, emitter)
+	value, err := p.dispatch(method, v, raw, emitter)
 	if err != nil {
 		if err == errMethodNotFound {
 			return nil, sdk.MethodNotFound(method)
 		}
 		return nil, serverError(err)
 	}
-	return result, nil
+	return value, nil
 }
 
 func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
@@ -136,6 +148,8 @@ func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter 
 		return p.startFileUpload(sess, raw, emitter)
 	case "docker/getDiskUsage":
 		return p.getDiskUsage(sess)
+	case "docker/prunePreview":
+		return p.prunePreview(sess, raw)
 	case "docker/prune":
 		return p.prune(sess, raw)
 	case "docker/renameContainer":

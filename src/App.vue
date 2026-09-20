@@ -29,6 +29,7 @@ import type {
   DockerImage,
   DockerImageLayer,
   DockerNetwork,
+  DockerPrunePreview,
   DockerPruneTarget,
   DockerRegistryAuth,
   DockerStreamHandle,
@@ -153,11 +154,19 @@ const volumeDraft = ref({ name: '', driver: 'local', labels: '', driverOptions: 
 const networkDraft = ref({ name: '', driver: 'bridge', internal: false, attachable: false, subnet: '', gateway: '' });
 
 // ---------- 磁盘占用与清理 ----------
+// 清理是不可恢复操作，因此走弹窗 + 预览 + 输入确认短语三重门禁，不再提供一键按钮。
+type PruneChoice = DockerPruneTarget | 'images-all' | 'volumes-all';
+
 const diskUsageOpen = ref(false);
 const diskUsage = ref<DockerDiskUsage>();
 const diskUsageLoading = ref(false);
 const diskUsageError = ref('');
-const pruneInFlight = ref<DockerPruneTarget | ''>('');
+const pruneChoice = ref<PruneChoice>('containers');
+const prunePreview = ref<DockerPrunePreview>();
+const prunePreviewLoading = ref(false);
+const prunePreviewError = ref('');
+const pruneConfirmText = ref('');
+const pruneRunning = ref(false);
 
 // ---------- 重命名 / 打标签 / 分层历史 ----------
 const renameOpen = ref(false);
@@ -248,30 +257,87 @@ async function loadDiskUsage() {
   }
 }
 
-// Popover 的 trigger 插槽由组件自身负责 toggle：在按钮上再挂 @click 会先置 true、
-// 再被冒泡到组件的 toggle 反转回 false，表现就是「点了没反应」。因此改为监听展开状态。
-watch(diskUsageOpen, (open) => {
-  if (open) void loadDiskUsage();
-});
+const pruneChoices = computed<{ value: PruneChoice; label: string; hint: string; risky?: boolean }[]>(() => [
+  { value: 'containers', label: t('pruneContainers'), hint: t('pruneContainersHint') },
+  { value: 'images', label: t('pruneImages'), hint: t('pruneImagesHint') },
+  { value: 'images-all', label: t('pruneImagesAll'), hint: t('pruneImagesAllHint'), risky: true },
+  { value: 'volumes', label: t('pruneVolumes'), hint: t('pruneVolumesHint') },
+  { value: 'volumes-all', label: t('pruneVolumesAll'), hint: t('pruneVolumesAllHint'), risky: true },
+  { value: 'networks', label: t('pruneNetworks'), hint: t('pruneNetworksHint') },
+]);
 
-async function runPrune(target: DockerPruneTarget, all: boolean, actionLabel: string) {
-  if (isReadOnly.value) {
-    toast(t('readOnly'), 2400);
-    return;
-  }
-  if (!(await requestConfirmation(t('confirmPrune', { action: actionLabel })))) return;
-  pruneInFlight.value = target;
+const pruneConfirmPhrase = computed(() => t('pruneConfirmPhrase'));
+const prunePhraseMatches = computed(() => pruneConfirmText.value.trim() === pruneConfirmPhrase.value);
+const activePruneChoice = computed(() => pruneChoices.value.find((item) => item.value === pruneChoice.value));
+const canExecutePrune = computed(
+  () =>
+    !isReadOnly.value &&
+    !pruneRunning.value &&
+    prunePhraseMatches.value &&
+    !!prunePreview.value &&
+    prunePreview.value.count > 0,
+);
+
+/** 去掉 -all 后缀得到 Docker API 的清理目标，后缀本身代表「包含具名/带标签资源」。 */
+function apiPruneTarget(choice: PruneChoice): DockerPruneTarget {
+  if (choice === 'images-all') return 'images';
+  if (choice === 'volumes-all') return 'volumes';
+  return choice;
+}
+
+function pruneChoiceIsAll(choice: PruneChoice): boolean {
+  return choice === 'images-all' || choice === 'volumes-all';
+}
+
+async function loadPrunePreview() {
+  prunePreviewLoading.value = true;
+  prunePreviewError.value = '';
   try {
-    const result = await api.prune(connectionId.value, target, all);
+    prunePreview.value = await api.prunePreview(connectionId.value, apiPruneTarget(pruneChoice.value), pruneChoiceIsAll(pruneChoice.value));
+  } catch (cause: any) {
+    prunePreview.value = undefined;
+    prunePreviewError.value = cause?.message || String(cause);
+  } finally {
+    prunePreviewLoading.value = false;
+  }
+}
+
+function openDiskUsage() {
+  diskUsageOpen.value = true;
+  pruneChoice.value = 'containers';
+  pruneConfirmText.value = '';
+  void loadDiskUsage();
+  void loadPrunePreview();
+}
+
+async function selectPruneChoice(choice: PruneChoice) {
+  if (pruneChoice.value === choice) return;
+  pruneChoice.value = choice;
+  // 确认短语是针对「具体这一批资源」的，换目标必须重新输入。
+  pruneConfirmText.value = '';
+  prunePreview.value = undefined;
+  await loadPrunePreview();
+}
+
+async function executePrune() {
+  if (!canExecutePrune.value) return;
+  const choice = pruneChoice.value;
+  const expected = prunePreview.value?.count ?? 0;
+  pruneRunning.value = true;
+  try {
+    const result = await api.prune(connectionId.value, apiPruneTarget(choice), pruneChoiceIsAll(choice));
     const count = result.deleted?.length ?? 0;
     if (!count && !result.spaceReclaimed) toast(t('pruneNothing'), 2400);
-    else toast(t('pruneDone', { count, size: formatBytes(result.spaceReclaimed || 0) }), 3600);
+    else toast(t('pruneDone', { count, size: formatBytes(result.spaceReclaimed || 0) }), 4000);
+    pruneConfirmText.value = '';
     await loadDiskUsage();
+    await loadPrunePreview();
     await loadResource();
+    if (count !== expected) toast(t('pruneCountMismatch', { expected, actual: count }), 6000);
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
   } finally {
-    pruneInFlight.value = '';
+    pruneRunning.value = false;
   }
 }
 
@@ -1646,58 +1712,7 @@ onUnmounted(() => {
       <div class="header-actions">
         <button class="icon-btn icon-cyan" :title="t('engineJson')" @click="loadEngineDetails('json')"><Icon name="settings" /></button>
         <button class="icon-btn icon-amber" :title="t('engineInformation')" @click="loadEngineDetails('summary')"><Icon name="circle-help" /></button>
-        <Popover :open="diskUsageOpen" @update:open="diskUsageOpen = $event">
-          <template #trigger>
-            <button class="icon-btn icon-emerald" :title="t('diskUsage')"><Icon name="hard-drive" /></button>
-          </template>
-          <div class="disk-panel">
-            <div class="disk-title">{{ t('diskUsage') }}</div>
-            <div class="disk-desc">{{ t('diskUsageDescription') }}</div>
-            <div v-if="diskUsageError" class="error-text disk-error">{{ diskUsageError }}</div>
-            <div v-else-if="diskUsageLoading && !diskUsage" class="muted-text disk-loading">{{ t('waitingForLogs') }}</div>
-            <table v-else-if="diskUsage" class="disk-table">
-              <tbody>
-                <tr v-for="row in diskUsageRows" :key="row.key">
-                  <td class="disk-name">{{ t(row.key) }}</td>
-                  <td class="disk-count">{{ row.count }}</td>
-                  <td class="disk-size">{{ formatBytes(row.size) }}</td>
-                  <td class="disk-reclaim">{{ formatBytes(row.reclaimable) }}</td>
-                  <td class="disk-action">
-                    <button
-                      v-if="row.target"
-                      class="btn btn-outline btn-sm"
-                      :disabled="isReadOnly || pruneInFlight === row.target"
-                      @click="runPrune(row.target, false, row.pruneLabel)"
-                    >
-                      <Icon v-if="pruneInFlight === row.target" name="loader-circle" class="spin" />
-                      {{ t('prune') }}
-                    </button>
-                    <button
-                      v-else-if="row.allTarget"
-                      class="btn btn-outline btn-sm"
-                      :disabled="isReadOnly || pruneInFlight === row.allTarget"
-                      @click="runPrune(row.allTarget, true, t('pruneImagesAll'))"
-                    >
-                      <Icon v-if="pruneInFlight === row.allTarget" name="loader-circle" class="spin" />
-                      {{ t('pruneImagesAll') }}
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td colspan="2">{{ t('storageTotal') }}</td>
-                  <td colspan="2">{{ formatBytes(diskUsage.layersSize) }}</td>
-                  <td>
-                    <button class="btn btn-ghost btn-sm" :disabled="diskUsageLoading" @click="loadDiskUsage">
-                      <Icon name="refresh-cw" :class="{ spin: diskUsageLoading }" />
-                    </button>
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </Popover>
+        <button class="icon-btn icon-emerald" :title="t('diskUsage')" @click="openDiskUsage"><Icon name="hard-drive" /></button>
         <Popover :open="transferOpen" @update:open="transferOpen = $event">
           <template #trigger>
             <button class="icon-btn icon-blue" :title="t('transfers')">
@@ -2414,6 +2429,102 @@ onUnmounted(() => {
       </div>
       <div class="dlg-footer">
         <button class="btn btn-outline" @click="historyOpen = false">{{ t('cancel') }}</button>
+      </div>
+    </Dialog>
+
+    <Dialog :open="diskUsageOpen" content-class="dlg-wide" @update:open="diskUsageOpen = $event">
+      <div class="dlg-header">
+        <div class="dlg-title">{{ t('diskUsage') }}</div>
+        <div class="dlg-desc">{{ t('diskUsageDescription') }}</div>
+      </div>
+
+      <div class="disk-dialog">
+        <div v-if="diskUsageError" class="error-text">{{ diskUsageError }}</div>
+        <div v-else-if="diskUsageLoading && !diskUsage" class="muted-text">{{ t('waitingForLogs') }}</div>
+        <table v-else-if="diskUsage" class="disk-table">
+          <thead>
+            <tr>
+              <th>{{ t('resource') }}</th>
+              <th>{{ t('count') }}</th>
+              <th>{{ t('size') }}</th>
+              <th>{{ t('reclaimable') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in diskUsageRows" :key="row.key">
+              <td class="disk-name">{{ t(row.key) }}</td>
+              <td class="disk-count">{{ row.count }}</td>
+              <td class="disk-size">{{ formatBytes(row.size) }}</td>
+              <td class="disk-reclaim">{{ formatBytes(row.reclaimable) }}</td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2">{{ t('storageTotal') }}</td>
+              <td colspan="2">{{ formatBytes(diskUsage.layersSize) }}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <div class="danger-banner">
+          <Icon name="circle-help" />
+          <span>{{ t('pruneWarningBanner') }}</span>
+        </div>
+
+        <div class="prune-choices">
+          <button
+            v-for="choice in pruneChoices"
+            :key="choice.value"
+            class="prune-choice"
+            :class="{ active: pruneChoice === choice.value, 'prune-choice-danger': choice.risky }"
+            :disabled="isReadOnly"
+            @click="selectPruneChoice(choice.value)"
+          >
+            <span class="prune-choice-label">{{ choice.label }}</span>
+            <span class="prune-choice-hint">{{ choice.hint }}</span>
+          </button>
+        </div>
+
+        <div class="prune-preview">
+          <div class="prune-preview-head">
+            <span>{{ t('prunePreviewTitle') }}</span>
+            <button class="btn btn-ghost btn-sm" :disabled="prunePreviewLoading" @click="loadPrunePreview">
+              <Icon name="refresh-cw" :class="{ spin: prunePreviewLoading }" />
+            </button>
+          </div>
+          <div v-if="prunePreviewError" class="error-text">{{ prunePreviewError }}</div>
+          <div v-else-if="prunePreviewLoading && !prunePreview" class="muted-text">{{ t('waitingForLogs') }}</div>
+          <template v-else-if="prunePreview">
+            <div class="prune-preview-summary">
+              <strong>{{ t('prunePreviewCount', { count: prunePreview.count }) }}</strong>
+              <span class="muted">{{ t('prunePreviewSize', { size: formatBytes(prunePreview.totalSize) }) }}</span>
+            </div>
+            <div v-if="!prunePreview.count" class="prune-preview-empty">{{ t('pruneNothing') }}</div>
+            <ul v-else class="prune-preview-list">
+              <li v-for="(item, index) in prunePreview.items" :key="`${item.id}-${index}`" class="prune-preview-item">
+                <span class="prune-preview-name truncate" :title="item.name || item.id">{{ item.name || item.id }}</span>
+                <span class="prune-preview-id mono-xs">{{ item.id }}</span>
+                <span v-if="item.detail" class="prune-preview-detail truncate" :title="item.detail">{{ item.detail }}</span>
+                <span class="prune-preview-size mono-xs">{{ item.size ? formatBytes(item.size) : '' }}</span>
+              </li>
+            </ul>
+            <div v-if="prunePreview.truncated" class="muted-text xs-strong">{{ t('prunePreviewTruncated', { shown: prunePreview.items.length }) }}</div>
+          </template>
+        </div>
+
+        <label class="docker-field">
+          <span>{{ t('pruneConfirmLabel', { phrase: pruneConfirmPhrase }) }}</span>
+          <input v-model="pruneConfirmText" class="input" :placeholder="pruneConfirmPhrase" autocomplete="off" spellcheck="false" />
+        </label>
+        <div v-if="pruneConfirmText && !prunePhraseMatches" class="error-text">{{ t('pruneConfirmMismatch', { phrase: pruneConfirmPhrase }) }}</div>
+      </div>
+
+      <div class="dlg-footer">
+        <button class="btn btn-outline" @click="diskUsageOpen = false">{{ t('cancel') }}</button>
+        <button class="btn btn-danger" :disabled="!canExecutePrune" @click="executePrune">
+          <Icon v-if="pruneRunning" name="loader-circle" class="spin" />
+          {{ t('pruneConfirmAction') }}
+        </button>
       </div>
     </Dialog>
 

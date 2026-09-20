@@ -12,7 +12,8 @@ The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the
 - An accessible Docker Engine API. Local Docker Desktop TCP normally uses `127.0.0.1:2375`; HTTPS normally uses port 2376. Unix sockets and Unix sockets reached through SSH `nc -U` are also supported.
 - Plain HTTP to a remote host is rejected unless **Allow insecure remote HTTP** is explicitly enabled. An exposed Docker daemon grants control comparable to the host user or root account. Prefer HTTPS with certificates or an SSH tunnel.
 - SSH `nc` connections verify the server key against `~/.ssh/known_hosts` by default. Set **SSH known_hosts path** if the trusted file is elsewhere.
-- Read-only connections reject Docker write operations and container terminals in the Go backend.
+- Read-only connections reject Docker write operations, container terminals, and container file uploads in the Go backend.
+- Every RPC handler is wrapped in a panic guard, so a failure inside one method returns an RPC error instead of taking the whole sidecar (and the open workbench) down.
 
 ## DBX tunnel reuse
 
@@ -26,7 +27,7 @@ Running containers expose a **Terminal** tab backed by `docker exec` with a TTY.
 
 ## Monitoring charts
 
-Container monitoring renders with ECharts (canvas), not a scaled SVG: CPU %, memory used vs. limit, network throughput, and block I/O. Network and block I/O are derived from Docker's cumulative counters with per-second rates, and counter resets (a container restart) are clamped to zero instead of producing a negative spike. A summary row shows the latest sample in numbers.
+Container monitoring renders with ECharts (canvas), not a scaled SVG, in a fixed 2x2 grid — CPU % and memory on the first row, network throughput and block I/O on the second. Network and block I/O are derived from Docker's cumulative counters with per-second rates, and counter resets (a container restart) are clamped to zero instead of producing a negative spike. A summary row shows the latest sample in numbers.
 
 ## Files in a container
 
@@ -38,9 +39,29 @@ Image export asks the desktop host for a native save dialog and the host returns
 
 A plugin sandbox has no host API to reveal a path in the OS file manager (`reveal_path_in_file_manager` is app-internal), so the plugin copies the path rather than opening Explorer.
 
-## Disk usage and pruning
+## Disk usage and cleanup
 
-The header exposes a `docker system df` view with per-category size and reclaimable space for images, containers, volumes, build cache, and networks, plus a prune button per category (dangling images by default, or every unused image). Pruning requires a writable connection and an explicit confirmation.
+The header opens a `docker system df` view with per-category size and reclaimable space for images, containers, volumes, build cache, and networks.
+
+Cleanup is deliberately hard to trigger by accident:
+
+1. It lives in a **modal dialog**, not a one-click button.
+2. Picking a category runs a **read-only preview** (`docker/prunePreview`) that lists exactly what would be deleted — names, ids and sizes — with a per-category note explaining what is kept.
+3. The delete button stays disabled until the user **types the confirmation phrase** (`我同意` / `I AGREE`) exactly.
+4. After running, the actual deleted count is compared with the preview and any mismatch is reported.
+
+Targets mirror the Docker CLI defaults instead of "delete as much as possible":
+
+| Target | Removes | Keeps |
+| --- | --- | --- |
+| Stopped containers | every container not running or paused | running / paused containers |
+| Dangling images | untagged images no container references | tagged images |
+| Unused images (`all`) | every image no container references, tagged or not | images in use |
+| Unused anonymous volumes | same as `docker volume prune` | named volumes |
+| Unused volumes (`all`) | every volume no container uses, incl. named | volumes in use |
+| Unused networks | networks with no container attached | predefined Docker networks |
+
+The preview needs the same capabilities as the operation itself (`/bin/sh` is not required; it only uses the Docker API). A destructive action still requires a writable connection.
 
 ## Limitations
 

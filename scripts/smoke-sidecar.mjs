@@ -616,6 +616,39 @@ try {
     });
   }
 
+  await check('docker/prunePreview is read-only and never lists running containers', async () => {
+    const before = await client.request('docker/listContainers', { connectionId: CONNECTION_ID, all: true });
+    const preview = await client.request('docker/prunePreview', { connectionId: CONNECTION_ID, target: 'containers', all: false });
+    const after = await client.request('docker/listContainers', { connectionId: CONNECTION_ID, all: true });
+    assert(after.length === before.length, `prunePreview changed the container count: ${before.length} → ${after.length}`);
+    assert(Array.isArray(preview.items), 'preview.items must be an array');
+    assert(typeof preview.count === 'number' && typeof preview.totalSize === 'number', 'preview must report count and totalSize');
+    assert(preview.truncated === true || preview.count === preview.items.length, 'preview.count must match the listed items');
+    const protectedIds = new Set(
+      after.filter((item) => item.state === 'running' || item.state === 'paused').map((item) => item.id.slice(0, 12)),
+    );
+    for (const item of preview.items) {
+      assert(!protectedIds.has(item.id), `running/paused container ${item.id} must never be a prune candidate`);
+    }
+    return `${preview.count} candidate(s), nothing deleted`;
+  });
+
+  for (const [target, all] of [['images', false], ['images', true], ['volumes', false], ['volumes', true], ['networks', false]]) {
+    await check(`docker/prunePreview (${target}${all ? ', all' : ''}) responds without deleting`, async () => {
+      const preview = await client.request('docker/prunePreview', { connectionId: CONNECTION_ID, target, all });
+      assert(typeof preview.count === 'number', 'missing count');
+      assert(Array.isArray(preview.items), 'missing items');
+      assert(typeof preview.warning === 'string' && preview.warning.length > 0, 'every target must explain what cleanup removes');
+      if (all) {
+        // 「包含具名/带标签」的口径必须覆盖默认口径。
+        const narrow = await client.request('docker/prunePreview', { connectionId: CONNECTION_ID, target, all: false });
+        assert(preview.count >= narrow.count, `all=${all} preview (${preview.count}) must include the default preview (${narrow.count})`);
+        return `${preview.count} candidate(s) ⊇ ${narrow.count} default`;
+      }
+      return `${preview.count} candidate(s) · ${preview.totalSize} bytes`;
+    });
+  }
+
   await check('connection/disconnect', async () => {
     const result = await client.request('connection/disconnect', { connection: connectionPayload(CONNECTION_ID) });
     assert(result.success === true, 'disconnect failed');
@@ -626,6 +659,8 @@ try {
 
 console.log('');
 if (failures > 0) {
+  // sidecar 的失败/panic 信息只出现在 stderr，失败时务必带出来。
+  if (client.stderr.trim()) console.error(`Sidecar stderr:\n${client.stderr.trim()}`);
   console.error(`Smoke test failed: ${failures} of ${checks.length} checks failed.`);
   process.exitCode = 1;
 } else {

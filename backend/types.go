@@ -208,6 +208,23 @@ type DockerPruneResult struct {
 	SpaceReclaimed int64    `json:"spaceReclaimed"`
 }
 
+// DockerPruneCandidate 是「按下去会被删除」的单个资源，用于删除前预览。
+type DockerPruneCandidate struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Detail string `json:"detail,omitempty"`
+	Size   int64  `json:"size"`
+}
+
+type DockerPrunePreview struct {
+	Target    string                 `json:"target"`
+	Count     int                    `json:"count"`
+	TotalSize int64                  `json:"totalSize"`
+	Items     []DockerPruneCandidate `json:"items"`
+	Truncated bool                   `json:"truncated,omitempty"`
+	Warning   string                 `json:"warning,omitempty"`
+}
+
 type DockerImageLayer struct {
 	ID        string   `json:"id"`
 	Created   int64    `json:"created"`

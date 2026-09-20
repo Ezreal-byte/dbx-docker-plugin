@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	dockertypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 )
 
 // ---------- 磁盘占用 ----------
@@ -54,7 +57,7 @@ func (p *plugin) getDiskUsage(sess *session) (any, error) {
 	}
 	var volumeSize, volumeReclaimable int64
 	for _, item := range usage.Volumes {
-		if item == nil {
+		if item == nil || item.UsageData == nil {
 			continue
 		}
 		volumeSize += item.UsageData.Size
@@ -91,6 +94,186 @@ func (p *plugin) getDiskUsage(sess *session) (any, error) {
 			Count: len(networks),
 		},
 	}, nil
+}
+
+// ---------- 清理预览 ----------
+// 删除前先列出「如果我按下清理，哪些东西会消失」，供前端做强制二次确认。
+// 这里只读，不产生任何变更。
+
+const prunePreviewItemLimit = 200
+
+func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
+	var in struct {
+		Target string `json:"target"`
+		All    bool   `json:"all"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, errInvalidParams
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cli := sess.client.cli
+
+	preview := DockerPrunePreview{Target: in.Target, Items: []DockerPruneCandidate{}}
+
+	switch in.Target {
+	case "containers":
+		items, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if item.State == "running" || item.State == "paused" {
+				continue
+			}
+			name := strings.TrimPrefix(firstOrEmpty(item.Names), "/")
+			preview.Items = append(preview.Items, DockerPruneCandidate{
+				ID:     shortContainerID(item.ID),
+				Name:   name,
+				Detail: item.Status,
+				Size:   item.SizeRw,
+			})
+		}
+		preview.Warning = "Only stopped containers are removed; running and paused containers are kept."
+
+	case "images":
+		args := filters.NewArgs(filters.Arg("dangling", strconv.FormatBool(!in.All)))
+		items, err := cli.ImageList(ctx, image.ListOptions{All: in.All, Filters: args})
+		if err != nil {
+			return nil, err
+		}
+		used, err := usedImageIDs(ctx, cli)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if used[item.ID] {
+				continue
+			}
+			preview.Items = append(preview.Items, DockerPruneCandidate{
+				ID:     shortImageID(item.ID),
+				Name:   firstOrEmpty(item.RepoTags),
+				Detail: strings.Join(nonNilStrings(item.RepoTags), ", "),
+				Size:   item.Size,
+			})
+		}
+		if in.All {
+			preview.Warning = "Every image that is not used by a container is removed, including tagged images. Re-pull or rebuild them to restore."
+		} else {
+			preview.Warning = "Only untagged (dangling) images that no container references are removed."
+		}
+
+	case "volumes":
+		resp, err := cli.VolumeList(ctx, volume.ListOptions{Filters: filters.NewArgs(filters.Arg("dangling", "true"))})
+		if err != nil {
+			return nil, err
+		}
+		// /volumes 不返回 RefCount，只能自己按容器挂载反推「未被引用」。
+		referenced, err := referencedVolumeNames(ctx, cli)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range resp.Volumes {
+			if item == nil || referenced[item.Name] {
+				continue
+			}
+			// 与 docker volume prune 的默认行为对齐：不加 --all 时只删匿名卷
+			// （用「没有标签」作为匿名卷的判据，和 daemon 的过滤条件一致）。
+			if !in.All && len(item.Labels) > 0 {
+				continue
+			}
+			var size int64
+			if item.UsageData != nil {
+				size = item.UsageData.Size
+			}
+			preview.Items = append(preview.Items, DockerPruneCandidate{
+				ID:     item.Name,
+				Name:   item.Name,
+				Detail: item.Driver,
+				Size:   size,
+			})
+		}
+		if in.All {
+			preview.Warning = "Every volume no container uses is removed, including named volumes. Their data cannot be recovered."
+		} else {
+			preview.Warning = "Only unused anonymous volumes are removed, matching `docker volume prune`. Named volumes are kept."
+		}
+
+	case "networks":
+		items, err := cli.NetworkList(ctx, network.ListOptions{Filters: filters.NewArgs(filters.Arg("dangling", "true"))})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			preview.Items = append(preview.Items, DockerPruneCandidate{
+				ID:     item.ID[:min(len(item.ID), 12)],
+				Name:   item.Name,
+				Detail: item.Driver,
+			})
+		}
+		preview.Warning = "Networks no container uses are removed. Predefined Docker networks are kept."
+
+	default:
+		return nil, fmt.Errorf("Unsupported prune target: %s", in.Target)
+	}
+
+	preview.Count = len(preview.Items)
+	for _, item := range preview.Items {
+		preview.TotalSize += item.Size
+	}
+	if len(preview.Items) > prunePreviewItemLimit {
+		preview.Items = preview.Items[:prunePreviewItemLimit]
+		preview.Truncated = true
+	}
+	return preview, nil
+}
+
+// usedImageIDs 收集被任何容器（含已停止）引用的镜像 ID。
+func usedImageIDs(ctx context.Context, cli dockerAPI) (map[string]bool, error) {
+	items, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	used := make(map[string]bool, len(items))
+	for _, item := range items {
+		if item.ImageID != "" {
+			used[item.ImageID] = true
+		}
+	}
+	return used, nil
+}
+
+// referencedVolumeNames 收集被任何容器（含已停止）挂载的卷名。
+func referencedVolumeNames(ctx context.Context, cli dockerAPI) (map[string]bool, error) {
+	items, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	referenced := map[string]bool{}
+	for _, item := range items {
+		for _, mountRef := range item.Mounts {
+			if mountRef.Type == "volume" && mountRef.Name != "" {
+				referenced[mountRef.Name] = true
+			}
+		}
+	}
+	return referenced, nil
+}
+
+func firstOrEmpty(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func shortContainerID(id string) string {
+	return id[:min(len(id), 12)]
+}
+
+func shortImageID(id string) string {
+	return strings.TrimPrefix(id, "sha256:")[:min(len(strings.TrimPrefix(id, "sha256:")), 12)]
 }
 
 // ---------- 清理 ----------
@@ -142,7 +325,12 @@ func (p *plugin) prune(sess *session, raw json.RawMessage) (any, error) {
 		}
 		return DockerPruneResult{Deleted: deleted, SpaceReclaimed: int64(report.SpaceReclaimed)}, nil
 	case "volumes":
-		report, err := cli.VolumesPrune(ctx, filters.NewArgs())
+		args := filters.NewArgs()
+		if in.All {
+			// 不带 all 时 daemon 只清理匿名卷，与预览保持一致。
+			args = filters.NewArgs(filters.Arg("all", "true"))
+		}
+		report, err := cli.VolumesPrune(ctx, args)
 		if err != nil {
 			return nil, err
 		}

@@ -215,6 +215,23 @@ export interface DockerPruneResult {
   spaceReclaimed: number;
 }
 
+/** 按下去会被删除的单个资源，用于删除前预览。 */
+export interface DockerPruneCandidate {
+  id: string;
+  name: string;
+  detail?: string;
+  size: number;
+}
+
+export interface DockerPrunePreview {
+  target: DockerPruneTarget;
+  count: number;
+  totalSize: number;
+  items: DockerPruneCandidate[];
+  truncated?: boolean;
+  warning?: string;
+}
+
 export interface DockerImageLayer {
   id: string;
   created: number;

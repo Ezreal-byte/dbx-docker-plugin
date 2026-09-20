@@ -19,6 +19,7 @@ import type {
   DockerImageLayer,
   DockerLogOptions,
   DockerNetwork,
+  DockerPrunePreview,
   DockerPruneResult,
   DockerPruneTarget,
   DockerRegistryAuth,
@@ -138,6 +139,10 @@ export function getEngineDetails(connectionId: string) {
 
 export function getDiskUsage(connectionId: string) {
   return invoke<DockerDiskUsage>(connectionId, 'docker/getDiskUsage');
+}
+
+export function prunePreview(connectionId: string, target: DockerPruneTarget, all = false) {
+  return invoke<DockerPrunePreview>(connectionId, 'docker/prunePreview', { target, all });
 }
 
 export function prune(connectionId: string, target: DockerPruneTarget, all = false) {

@@ -185,7 +185,9 @@ input, textarea, select { font: inherit; color: var(--foreground); }
   background: #09090b; color: #f4f4f5; padding: 12px;
   font-family: var(--mono-font); font-size: 0.75rem; line-height: 1.5;
 }
-.monitoring-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+/* 固定 2x2：第一行 CPU / 内存，第二行 网络 / 磁盘 IO，避免 auto-fit 在不同宽度下乱换行。 */
+.monitoring-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .monitoring-grid { grid-template-columns: minmax(0, 1fr); } }
 .monitoring-pane { display: flex; flex-direction: column; gap: 12px; }
 .monitor-summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .monitor-empty { padding: 24px 0; text-align: center; }
@@ -380,20 +382,53 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .docker-table tbody tr:not(.compose-header):hover > td { background: color-mix(in srgb, var(--muted) 55%, transparent); }
 .docker-table tbody tr.row-selected:hover > td { background: color-mix(in srgb, var(--primary) 16%, transparent); }
 
-/* ---------- 磁盘占用与清理 ---------- */
-.disk-panel { width: 30rem; max-width: 80vw; }
-.disk-title { font-size: 0.875rem; font-weight: 600; }
-.disk-desc { margin: 4px 0 10px; font-size: 10px; line-height: 1.5; color: var(--muted-foreground); }
-.disk-error, .disk-loading { padding: 8px 0; }
+/* ---------- 磁盘占用与清理（弹窗） ---------- */
+.disk-dialog { display: flex; flex-direction: column; gap: 12px; }
 .disk-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
-.disk-table th, .disk-table td { padding: 6px 4px; text-align: left; }
-.disk-table thead th { color: var(--muted-foreground); font-weight: 500; font-size: 10px; }
+.disk-table th, .disk-table td { padding: 6px 6px; text-align: left; }
+.disk-table thead th { color: var(--muted-foreground); font-weight: 500; font-size: 10px; border-bottom: 1px solid var(--border); }
 .disk-table tbody tr { border-top: 1px solid var(--border); }
 .disk-table tfoot tr { border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 10px; }
 .disk-name { font-weight: 500; }
 .disk-count, .disk-size, .disk-reclaim { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .disk-reclaim { color: var(--muted-foreground); }
-.disk-action { text-align: right; white-space: nowrap; }
+
+.danger-banner {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--destructive) 45%, transparent);
+  border-radius: 6px; padding: 8px 10px;
+  background: color-mix(in srgb, var(--destructive) 8%, transparent);
+  font-size: 0.75rem; line-height: 1.5;
+}
+.danger-banner .icon { width: 0.9rem; height: 0.9rem; margin-top: 1px; flex-shrink: 0; color: var(--destructive); }
+
+.prune-choices { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.prune-choice {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+}
+.prune-choice:hover:not(:disabled) { background: var(--muted); }
+.prune-choice.active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
+.prune-choice-danger.active { border-color: var(--destructive); background: color-mix(in srgb, var(--destructive) 12%, transparent); }
+.prune-choice-label { font-size: 0.8rem; font-weight: 500; }
+.prune-choice-hint { font-size: 10px; line-height: 1.45; color: var(--muted-foreground); }
+
+.prune-preview { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.prune-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; font-weight: 500; }
+.prune-preview-summary { display: flex; align-items: baseline; gap: 10px; margin-top: 6px; font-size: 0.8rem; }
+.prune-preview-warning { margin-top: 6px; }
+.prune-preview-empty { margin-top: 6px; font-size: 0.8rem; color: var(--muted-foreground); }
+.prune-preview-list { margin: 8px 0 0; padding: 0; list-style: none; max-height: 11rem; overflow: auto; }
+.prune-preview-item {
+  display: grid; align-items: center; gap: 8px;
+  grid-template-columns: minmax(0, 1.6fr) auto minmax(0, 1fr) auto;
+  border-top: 1px solid var(--border); padding: 4px 2px; font-size: 0.75rem;
+}
+.prune-preview-item:first-child { border-top: none; }
+.prune-preview-name { min-width: 0; }
+.prune-preview-id { color: var(--muted-foreground); }
+.prune-preview-detail { min-width: 0; color: var(--muted-foreground); font-size: 10px; }
+.prune-preview-size { color: var(--muted-foreground); text-align: right; white-space: nowrap; }
 
 /* ---------- 标签胶囊 ---------- */
 .tag-chip-list { display: flex; flex-wrap: wrap; gap: 4px; }
