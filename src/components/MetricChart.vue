@@ -54,7 +54,7 @@ function buildOption(): echarts.EChartsCoreOption {
 
   return {
     animation: false,
-    grid: { left: 8, right: 12, top: props.series.length > 1 ? 26 : 10, bottom: 4, containLabel: true },
+    grid: { left: 8, right: 16, top: props.series.length > 1 ? 32 : 16, bottom: 8, containLabel: true },
     legend:
       props.series.length > 1
         ? { top: 0, right: 0, itemWidth: 10, itemHeight: 6, textStyle: { color: textColor, fontSize: 10 } }
@@ -130,7 +130,7 @@ onUnmounted(() => {
   chart = undefined;
 });
 
-watch(() => [props.labels, props.series], render, { deep: true });
+watch(() => [props.labels, props.series, props.max, props.title], render, { deep: true });
 </script>
 
 <template>

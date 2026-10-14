@@ -24,7 +24,8 @@ sidecar.child.stdout.on('data',chunk=>{
 });
 try {
  await rpc('connection/connect',{connection});
- const created=await rpc('docker/createContainer',{request:{name,image:'alpine:latest',command:['sleep','300'],start:true}});containerId=created.id;
+ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZgAAAABJRU5ErkJggg==';
+ const created=await rpc('docker/createContainer',{request:{name,image:'alpine:latest',command:['/bin/sh','-c',`printf '%s' '${png}' | base64 -d > /tmp/sample.png; printf 'server.port=8080\nserver.name=test\n' > /tmp/application.properties; sleep 300`],start:true}});containerId=created.id;
  const rootEntries=await rpc('docker/listContainerFiles',{containerId,path:'/'});assert(rootEntries.some(entry=>entry.path==='/tmp'));assert(rootEntries.every(entry=>!entry.path.startsWith('//')));
  const op=(operation,path,newName)=>rpc('docker/fileOperation',{containerId,operation,path,name:newName});
  await op('mkdir','/tmp/folder with space');
@@ -33,13 +34,15 @@ try {
  await op('rename',"/tmp/folder with space/quote'$(touch injected).txt",'renamed.txt');
  let entries=await rpc('docker/listContainerFiles',{containerId,path:'/tmp/folder with space'});assert.deepEqual(entries.map(e=>e.name),['renamed.txt']);
  assert.equal((await rpc('docker/previewContainerFile',{containerId,path:entries[0].path})).content,'');
+ const picture=await rpc('docker/previewContainerFile',{containerId,path:'/tmp/sample.png'});assert.equal(picture.mimeType,'image/png');assert.equal(picture.dataBase64,png);
+ const config=await rpc('docker/previewContainerFile',{containerId,path:'/tmp/application.properties'});assert.equal(config.binary,false);assert.match(config.content,/server.port=8080/);
  const sessionId=randomUUID();timer=setTimeout(()=>transferReject(Error('Archive timeout')),15000);
  await rpc('docker/startFileDownload',{containerId,path:'/tmp/folder with space',sessionId,archive:true});
  const archive=await transfer;assert(archive.length>=1024);assert(archive.includes(Buffer.from('renamed.txt')));
  await op('delete','/tmp/folder with space');
  entries=await rpc('docker/listContainerFiles',{containerId,path:'/tmp'});assert(!entries.some(e=>e.name==='folder with space'||e.name==='injected'));
  await assert.rejects(op('delete','/tmp/..'),/non-root/);
- console.log('PASS: create folder/file, reject overwrite, rename, preview, tar download, recursive delete, quoted paths and root protection; fixture '+name);
+ console.log('PASS: create folder/file, reject overwrite, rename, PNG/config preview, tar download, recursive delete, quoted paths and root protection; fixture '+name);
 } finally {
  clearTimeout(timer);
  if(containerId){await rpc('docker/containerAction',{containerId,action:'stop'});await rpc('docker/removeContainer',{containerId,force:false});}

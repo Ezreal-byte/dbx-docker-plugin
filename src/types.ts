@@ -186,6 +186,8 @@ export interface DockerFileEntry {
 }
 
 export interface DockerFilePreview {
+  mimeType?: string;
+  dataBase64?: string;
   path: string;
   content: string;
   truncated: boolean;
@@ -260,7 +262,7 @@ export interface DockerStreamStartOptions {
 
 export interface DockerTransferProgress {
   sessionId: string;
-  kind: "pull" | "push" | "export";
+  kind: "pull" | "push" | "export" | "file-download" | "file-upload";
   direction: "download" | "upload";
   image: string;
   status: "running" | "done" | "error" | "cancelled";

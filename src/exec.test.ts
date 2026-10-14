@@ -1,8 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import { encodeExecInputFrame } from './exec';
+import { describe, expect, it, vi } from 'vitest';
+import { encodeExecInputFrame, sendExecBytes, UPLOAD_CHUNK_BYTES } from './exec';
 import { decodeFrame, type ExecHeader } from './frames';
 
 describe('container terminal input frames', () => {
+  it('stops an upload between chunks when cancelled', async () => {
+    const abort = new AbortController();
+    const sendBinary = vi.fn(async () => { abort.abort(); });
+    vi.stubGlobal('window', { dbxPlugin: { sendBinary } });
+    try {
+      await expect(sendExecBytes('upload-cancel', new Uint8Array(UPLOAD_CHUNK_BYTES * 2), undefined, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(sendBinary).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('round-trips through the same layout the Go sidecar decodes', () => {
     const frame = encodeExecInputFrame('exec-1', 'echo hi\n');
     // 后端 decodeExecInput 读取 [kind][u32 头长度][JSON 头][数据]。

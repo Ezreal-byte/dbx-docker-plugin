@@ -6,7 +6,14 @@ The workbench lists containers, images, volumes, and networks. It supports conta
 
 The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the host initialization handshake and re-applies the language on `dbx-plugin-init` / `dbx-plugin-env`, so switching the DBX language updates the workbench without a reload.
 
-## 0.2.1 Windows verification candidate
+## 0.2.2 Windows verification candidate
+
+- All resource tables have visible resize handles, keyboard resizing and persisted column widths. Published TCP ports are highlighted browser shortcuts.
+- Compose and file previews share a CodeMirror editor with YAML, JSON, XML, properties/INI, TOML, Nginx, shell and Dockerfile highlighting. Common raster images have inline previews.
+- Container overview has grouped runtime, network and mount information. Monitoring follows Overview and uses refreshed cards/charts. File uploads and downloads appear in the header transfer list and remain visible after navigating between containers.
+- [0.2.2 changes, limits and validation](docs/0.2.2-validation.md)
+
+### Previous 0.2.1 changes
 
 - Resource names use normal text colors; compact tables distinguish Compose groups from child containers, and remote loading uses skeletons. Search fields can be cleared.
 - Compose editing returns YAML with exact external volume/network references and preserves supported runtime settings. Unsupported settings are rejected before replacement.
@@ -143,7 +150,7 @@ It verifies the handshake, direct and tunnel-routed connections, the remote plai
 
 The container rename and image tag checks restore the original state in a `finally` block, the file round-trip removes its temporary file, and pruning is skipped unless `SMOKE_ALLOW_PRUNE=1` is set — pruning really deletes stopped containers.
 
-On Windows x64, the package is `dist/io.dbx.docker-0.2.1-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
+On Windows x64, the package is `dist/io.dbx.docker-0.2.2-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
 
 To check form visibility, localization, required fields, secret storage and serialization against an upstream checkout:
 

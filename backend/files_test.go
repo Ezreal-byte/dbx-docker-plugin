@@ -1,9 +1,33 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
+
+func TestContainerPreviewFormats(t *testing.T) {
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZgAAAABJRU5ErkJggg==")
+	preview := containerFilePreview("/image.png", png)
+	if preview.MimeType != "image/png" || preview.DataBase64 == "" || preview.Content != "" {
+		t.Fatal(preview)
+	}
+	for _, file := range []string{"/app.yml", "/app.xml", "/app.properties"} {
+		preview = containerFilePreview(file, []byte("server=中文\n"))
+		if preview.Binary || preview.Content != "server=中文\n" || preview.DataBase64 != "" {
+			t.Fatal(preview)
+		}
+	}
+	preview = containerFilePreview("/too-large.png", append(png, bytes.Repeat([]byte{0}, filePreviewLimit)...))
+	if !preview.Truncated || preview.DataBase64 != "" {
+		t.Fatal("partial image must not be rendered")
+	}
+	preview = containerFilePreview("/diagram.svg", []byte(`<svg onload="alert(1)"></svg>`))
+	if preview.DataBase64 != "" || preview.Binary {
+		t.Fatal("SVG must stay in the text editor")
+	}
+}
 
 func TestFileOperationValidation(t *testing.T) {
 	for _, path := range []string{"/", "/tmp/..", "/tmp/", "relative", "/tmp/\x00bad", "/tmp/../etc"} {

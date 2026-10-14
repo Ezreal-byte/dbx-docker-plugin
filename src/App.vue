@@ -48,6 +48,10 @@ import AutomationPanel from './components/AutomationPanel.vue';
 import ResourceDetails from './components/ResourceDetails.vue';
 import LoadingSkeleton from './components/LoadingSkeleton.vue';
 import FileContextMenu from './components/FileContextMenu.vue';
+import CodeEditor from './components/CodeEditor.vue';
+import ResizableHeader from './components/ResizableHeader.vue';
+import ContainerPorts from './components/ContainerPorts.vue';
+import ContainerOverview from './components/ContainerOverview.vue';
 import { composeFromInspects } from './compose';
 import { local, recommendations, mutationPreview, mutationExecute, type MutationPreview, type Task } from './automation';
 import { invoke } from './bridge';
@@ -94,6 +98,9 @@ const actionInFlight = ref<Record<string, string | undefined>>({});
 const imageActionInFlight = ref<Record<string, string | undefined>>({});
 type TransferTask = DockerTransferProgress & {
   startedAt: number;
+  contextLabel?: string;
+  containerPath?: string;
+  saving?: boolean;
   handle?: DockerStreamHandle;
   savedPath?: string;
   savedPathKind?: 'desktop' | 'web';
@@ -116,6 +123,7 @@ const transfers = ref<TransferTask[]>([]);
 const cancelledTransferIds = new Set<string>();
 const transferParseStates = new Map<string, DockerProgressParseState>();
 const transferOpen = ref(false);
+let workbenchClosed = false;
 const pushImageOpen = ref(false);
 const pushDraft = ref({ sourceImageId: '', targetReference: '', serverAddress: '', username: '', password: '' });
 const autoRefresh = ref(true);
@@ -123,7 +131,7 @@ const refreshCountdown = ref(10);
 const lastRefreshAt = ref<Date>();
 const refreshInFlight = ref(false);
 const columnWidths = ref<Record<ResourceKind, number[]>>({
-  containers: [230, 110, 190, 150, 80, 160, 95, 260],
+  containers: [230, 120, 220, 260, 80, 180, 100, 260],
   images: [280, 140, 110, 180, 260],
   volumes: [220, 140, 140, 380],
   networks: [220, 150, 120, 120, 100, 100],
@@ -216,7 +224,7 @@ const fileEditTitle = computed(() => ({ mkdir: local('新建文件夹', 'New fol
 const fileError = ref('');
 const fileSelection = ref('');
 const uploadInput = ref<HTMLInputElement>();
-const fileTransfers = ref<FileTransferTask[]>([]);
+
 
 /** 与后端 maxFileTransferBytes 保持一致。 */
 const MAX_FILE_TRANSFER_BYTES = 256 * 1024 * 1024;
@@ -243,7 +251,7 @@ function isPaused(container: DockerContainer): boolean {
 
 // 终端标签只在容器运行时出现：docker exec 对已停止容器没有意义。
 const detailTabs = computed<DetailTab[]>(() => {
-  const tabs: DetailTab[] = ['overview', 'logs', 'monitoring', 'files'];
+  const tabs: DetailTab[] = ['overview', 'monitoring', 'logs', 'files'];
   if (selectedContainer.value && isRunning(selectedContainer.value)) tabs.push('terminal');
   return tabs;
 });
@@ -635,32 +643,27 @@ const diskUsageRows = computed<DiskUsageRow[]>(() => {
 });
 
 function tableStyle(kind: ResourceKind) {
-  return { minWidth: `${columnWidths.value[kind].reduce((sum, width) => sum + width, 0)}px` };
+  return { width: `${columnWidths.value[kind].reduce((sum, width) => sum + width, 0)}px`, minWidth: '100%' };
 }
-
-function handleHeaderPointer(event: PointerEvent, kind: ResourceKind) {
-  if (event.button !== 0) return;
-  const header = (event.target as HTMLElement).closest('th');
-  if (!(header instanceof HTMLTableCellElement)) return;
-  const bounds = header.getBoundingClientRect();
-  if (bounds.right - event.clientX > 8) return;
-  const index = header.cellIndex;
-  const initialWidth = columnWidths.value[kind][index];
-  if (initialWidth == null) return;
-  const initialX = event.clientX;
-  event.preventDefault();
-  event.stopPropagation();
-  const move = (moveEvent: PointerEvent) => {
-    const next = [...columnWidths.value[kind]];
-    next[index] = Math.max(64, initialWidth + moveEvent.clientX - initialX);
-    columnWidths.value = { ...columnWidths.value, [kind]: next };
-  };
-  const stop = () => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', stop);
-  };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', stop, { once: true });
+let columnWidthsEdited = false;
+function resizeColumn(kind: ResourceKind, index: number, width: number) {
+  columnWidthsEdited = true;
+  columnWidths.value[kind][index] = width;
+}
+function saveColumnWidths() {
+  if (!getPlugin().capabilities?.storage) return;
+  void getPlugin().storage?.set('workbench-column-widths-v1', JSON.parse(JSON.stringify(columnWidths.value))).catch(() => {});
+}
+async function loadColumnWidths() {
+  if (!getPlugin().capabilities?.storage) return;
+  try {
+    const saved = await getPlugin().storage?.get('workbench-column-widths-v1') as Record<string, unknown> | undefined;
+    if (columnWidthsEdited) return;
+    for (const kind of Object.keys(columnWidths.value) as ResourceKind[]) {
+      const widths = saved?.[kind];
+      if (Array.isArray(widths) && widths.length === columnWidths.value[kind].length && widths.every(n => typeof n === 'number' && n >= 64 && n <= 1600)) columnWidths.value[kind] = widths;
+    }
+  } catch { /* Older hosts keep widths for the current workbench. */ }
 }
 
 function upsertTransfer(progress: DockerTransferProgress, handle?: DockerStreamHandle) {
@@ -670,7 +673,7 @@ function upsertTransfer(progress: DockerTransferProgress, handle?: DockerStreamH
     next[index] = { ...next[index], ...progress, handle: handle ?? next[index].handle };
     transfers.value = next;
   } else {
-    transfers.value = [{ ...progress, startedAt: Date.now(), handle }, ...transfers.value].slice(0, 50);
+    transfers.value = [{ ...progress, startedAt: Date.now(), handle }, ...transfers.value].filter((task, index) => task.status === 'running' || index < 50);
   }
 }
 
@@ -688,6 +691,7 @@ async function copySavedPath(task: TransferTask) {
 }
 
 function transferPercent(task: TransferTask): number | undefined {
+  if (task.status === 'done') return 100;
   if (task.bytesTotal && task.bytesTotal > 0) return Math.min(100, (task.bytesCompleted / task.bytesTotal) * 100);
   if (task.layersTotal && task.layersTotal > 0 && task.layersCompleted != null) {
     return Math.min(100, (task.layersCompleted / task.layersTotal) * 100);
@@ -798,7 +802,6 @@ async function openDetail(container: DockerContainer) {
   detailTab.value = 'overview';
   terminalTabRequested.value = false;
   fileSelection.value = '';
-  fileTransfers.value = [];
   filePath.value = '/';
   inspect.value = {};
   detailLoading.value = true;
@@ -825,7 +828,6 @@ async function closeDetail() {
   fileEntries.value = [];
   filePreview.value = undefined;
   fileSelection.value = '';
-  fileTransfers.value = [];
 }
 
 function requestConfirmation(message: string): Promise<boolean> {
@@ -1225,8 +1227,8 @@ async function pushImage() {
 
 async function cancelTransfer(task: TransferTask) {
   cancelledTransferIds.add(task.sessionId);
-  await task.handle?.stop().catch(() => undefined);
   upsertTransfer({ ...task, status: 'cancelled' });
+  await task.handle?.stop().catch(() => undefined);
   if (task.kind === 'pull') {
     pulling.value = false;
     pullStream.value = undefined;
@@ -1449,32 +1451,30 @@ async function saveFileEdit() {
 
 // ---------- 容器文件传输 ----------
 
-function upsertFileTransfer(task: FileTransferTask) {
-  const index = fileTransfers.value.findIndex((item) => item.sessionId === task.sessionId);
-  if (index >= 0) {
-    const next = [...fileTransfers.value];
-    next[index] = { ...next[index], ...task };
-    fileTransfers.value = next;
-    return;
-  }
-  fileTransfers.value = [task, ...fileTransfers.value].slice(0, 20);
+function upsertFileTransfer(task: FileTransferTask, target: { connectionId: string; containerId: string; name: string }, stop: () => Promise<void>) {
+  upsertTransfer({ sessionId: task.sessionId, kind: task.direction === 'upload' ? 'file-upload' : 'file-download', direction: task.direction, image: task.name, status: task.status, bytesCompleted: task.bytes, bytesTotal: task.total }, { sessionId: task.sessionId, stop });
+  transfers.value = transfers.value.map(item => item.sessionId === task.sessionId ? { ...item, contextLabel: target.name, containerPath: task.path } : item);
+  transferOpen.value = true;
 }
-
-function patchFileTransfer(sessionId: string, patch: Partial<FileTransferTask>) {
-  fileTransfers.value = fileTransfers.value.map((item) => (item.sessionId === sessionId ? { ...item, ...patch } : item));
+function patchFileTransfer(sessionId: string, patch: Partial<FileTransferTask> & { saving?: boolean }) {
+  transfers.value = transfers.value.map(item => item.sessionId !== sessionId || cancelledTransferIds.has(sessionId) ? item : {
+    ...item,
+    ...(patch.bytes !== undefined ? { bytesCompleted: patch.bytes } : {}),
+    ...(patch.total !== undefined ? { bytesTotal: patch.total } : {}),
+    ...(patch.status !== undefined ? { status: patch.status, ...(patch.status !== 'running' ? { handle: undefined, saving: false } : {}) } : {}),
+    ...(patch.error !== undefined ? { error: patch.error } : {}),
+    ...(patch.savedPath !== undefined ? { savedPath: patch.savedPath, savedPathKind: patch.savedPathKind } : {}),
+    ...(patch.saving !== undefined ? { saving: patch.saving } : {}),
+  });
 }
 
 function joinContainerPath(directory: string, name: string): string {
   return directory.endsWith('/') ? `${directory}${name}` : `${directory}/${name}`;
 }
 
-function fileTransferPercent(task: FileTransferTask): number {
-  if (!task.total) return 0;
-  return Math.min(100, (task.bytes / task.total) * 100);
-}
-
 async function downloadFile(entry: DockerFileEntry) {
   if (!selectedContainer.value) return;
+  const target = { connectionId: connectionId.value, containerId: selectedContainer.value.id, name: containerName(selectedContainer.value) };
   const archive = entry.kind === 'directory';
   const fileName = archive ? `${entry.name}.tar` : entry.name;
   const sessionId = newSessionId();
@@ -1487,13 +1487,16 @@ async function downloadFile(entry: DockerFileEntry) {
     status: 'running',
     bytes: 0,
     total: archive ? 0 : entry.size,
-  });
+  }, target, async () => { unregisterStream(sessionId); chunks.length = 0; await api.stopStream(target.connectionId, sessionId); });
   registerFileStream(sessionId, (event) => {
+    if (cancelledTransferIds.has(sessionId)) return;
     if (event.chunk.length) chunks.push(event.chunk);
     patchFileTransfer(sessionId, { bytes: event.bytesReceived, total: event.size || (archive ? 0 : entry.size) });
     if (!event.done) return;
+    if (event.cancelled) { chunks.length = 0; patchFileTransfer(sessionId, { status: 'cancelled' }); return; }
     if (event.error) {
       unregisterStream(sessionId);
+      chunks.length = 0;
       patchFileTransfer(sessionId, { status: 'error', error: event.error });
       toast(event.error, 5000);
       return;
@@ -1501,7 +1504,8 @@ async function downloadFile(entry: DockerFileEntry) {
     void saveDownloadedFile(sessionId, fileName, chunks);
   });
   try {
-    await api.startFileDownload(connectionId.value, selectedContainer.value.id, entry.path, sessionId, archive);
+    await api.startFileDownload(target.connectionId, target.containerId, entry.path, sessionId, archive);
+    if (cancelledTransferIds.has(sessionId)) await api.stopStream(target.connectionId, sessionId);
   } catch (cause: any) {
     unregisterStream(sessionId);
     patchFileTransfer(sessionId, { status: 'error', error: cause?.message || String(cause) });
@@ -1511,6 +1515,8 @@ async function downloadFile(entry: DockerFileEntry) {
 
 async function saveDownloadedFile(sessionId: string, fileName: string, chunks: Uint8Array[]) {
   unregisterStream(sessionId);
+  if (cancelledTransferIds.has(sessionId)) return;
+  patchFileTransfer(sessionId, { saving: true });
   try {
     const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
     const merged = new Uint8Array(total);
@@ -1519,6 +1525,7 @@ async function saveDownloadedFile(sessionId: string, fileName: string, chunks: U
       merged.set(chunk, offset);
       offset += chunk.length;
     }
+    chunks.length = 0;
     const plugin = getPlugin();
     if (!plugin.saveFile) throw new Error(t('saveUnsupported'));
     const result = await plugin.saveFile({ fileName, contentType: 'application/octet-stream' }, merged.buffer);
@@ -1551,10 +1558,11 @@ async function handleUploadSelection(event: Event) {
   input.value = '';
   if (!files.length || !selectedContainer.value) return;
   const directory = filePath.value;
-  for (const file of files) await uploadOne(file, joinContainerPath(directory, file.name));
+  const target = { connectionId: connectionId.value, containerId: selectedContainer.value.id, name: containerName(selectedContainer.value) };
+  for (const file of files) { if (workbenchClosed) break; await uploadOne(file, joinContainerPath(directory, file.name), target); }
 }
 
-async function uploadOne(file: File, targetPath: string) {
+async function uploadOne(file: File, targetPath: string, target: { connectionId: string; containerId: string; name: string }) {
   if (file.size > MAX_FILE_TRANSFER_BYTES) {
     toast(t('fileTooLarge', { size: formatBytes(MAX_FILE_TRANSFER_BYTES) }), 5000);
     return;
@@ -1562,6 +1570,9 @@ async function uploadOne(file: File, targetPath: string) {
   const sessionId = newSessionId();
   let exitCode: number | undefined;
   let stderr = '';
+  const abort = new AbortController();
+  let finishUpload: (() => void) | undefined;
+  let completionTimer: ReturnType<typeof setTimeout> | undefined;
   upsertFileTransfer({
     sessionId,
     name: file.name,
@@ -1570,46 +1581,42 @@ async function uploadOne(file: File, targetPath: string) {
     status: 'running',
     bytes: 0,
     total: file.size,
-  });
+  }, target, async () => { abort.abort(); finishUpload?.(); unregisterStream(sessionId); await api.stopExec(target.connectionId, sessionId); });
 
   // 上传结束信号来自 docker-exec 通道的 done 帧（后端会带上退出码）。
   const finished = new Promise<void>((resolve) => {
+    finishUpload = resolve;
     registerExecStream(sessionId, (event) => {
-      if (event.chunk) stderr += event.chunk;
-      if (typeof event.exitCode === 'number') exitCode = event.exitCode;
+      if (event.chunk) stderr = (stderr + event.chunk).slice(-8192);
+      if (event.error) { stderr = event.error; exitCode = 1; }
+      if (!event.error && typeof event.exitCode === 'number') exitCode = event.exitCode;
       if (event.done) resolve();
     });
   });
 
   try {
-    await api.startFileUpload(connectionId.value, selectedContainer.value!.id, targetPath, sessionId, file.size);
+    await api.startFileUpload(target.connectionId, target.containerId, targetPath, sessionId, file.size);
+    if (abort.signal.aborted) { await api.stopExec(target.connectionId, sessionId); return; }
     const buffer = new Uint8Array(await file.arrayBuffer());
-    await sendExecBytes(sessionId, buffer, (sent) => patchFileTransfer(sessionId, { bytes: sent }));
+    await sendExecBytes(sessionId, buffer, (sent) => patchFileTransfer(sessionId, { bytes: sent }), abort.signal);
+    completionTimer = setTimeout(() => { exitCode = 1; stderr = 'Upload completion timed out'; finishUpload?.(); }, 120000);
     await finished;
+    if (abort.signal.aborted) return;
     if ((exitCode ?? 0) !== 0) {
       throw new Error(stderr.trim() || t('uploadFailed', { code: exitCode ?? -1 }));
     }
     patchFileTransfer(sessionId, { status: 'done', bytes: file.size, total: file.size });
     toast(t('fileUploaded', { name: file.name }), 3000);
-    await loadFiles();
+    if (selectedContainerId.value === target.containerId && connectionId.value === target.connectionId && filePath.value === parentPath(targetPath)) await loadFiles();
   } catch (cause: any) {
-    void api.stopExec(connectionId.value, sessionId).catch(() => undefined);
+    void api.stopExec(target.connectionId, sessionId).catch(() => undefined);
+    if (abort.signal.aborted) return;
     const message = cause?.message || String(cause);
     patchFileTransfer(sessionId, { status: 'error', error: message });
     toast(message, 5000);
   } finally {
+    clearTimeout(completionTimer);
     unregisterStream(sessionId);
-  }
-}
-
-async function cancelFileTransfer(task: FileTransferTask) {
-  if (task.status !== 'running') return;
-  unregisterStream(task.sessionId);
-  patchFileTransfer(task.sessionId, { status: 'cancelled' });
-  if (task.direction === 'download') {
-    await api.stopStream(connectionId.value, task.sessionId).catch(() => undefined);
-  } else {
-    await api.stopExec(connectionId.value, task.sessionId).catch(() => undefined);
   }
 }
 
@@ -1726,6 +1733,7 @@ onMounted(async () => {
   document.addEventListener('dbx-plugin-init', handleHostEnv);
   document.addEventListener('dbx-plugin-env', handleHostEnv);
   await plugin.ready;
+  void loadColumnWidths();
   applyHostLocale();
   const context = plugin.context;
   connectionName.value = context.connection?.name || '';
@@ -1742,6 +1750,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  workbenchClosed = true;
   document.removeEventListener('dbx-plugin-init', handleHostEnv);
   document.removeEventListener('dbx-plugin-env', handleHostEnv);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -1801,17 +1810,18 @@ onUnmounted(() => settleMutation(false));
                 <div class="transfer-row">
                   <Icon v-if="task.direction === 'upload'" name="file-up" class="transfer-icon-up" />
                   <Icon v-else name="file-down" class="transfer-icon-down" />
-                  <span class="transfer-image">{{ task.image }}</span>
+                  <span class="transfer-image" :title="task.containerPath || task.image">{{ task.image }}</span>
                   <span class="transfer-direction">{{ task.direction === 'upload' ? t('upload') : t('download') }}</span>
                   <span class="transfer-percent">{{ transferPercent(task) == null ? '—' : `${Math.round(transferPercent(task)!)}%` }}</span>
-                  <button v-if="task.status === 'running'" class="icon-btn icon-xs" @click="cancelTransfer(task)"><Icon name="x" /></button>
+                  <button v-if="task.status === 'running' && !task.saving" class="icon-btn icon-xs" :title="t('cancel')" :aria-label="t('cancel')" @click="cancelTransfer(task)"><Icon name="x" /></button>
                 </div>
                 <div class="transfer-bar">
                   <div v-if="transferPercent(task) != null" class="transfer-bar-fill" :style="{ width: `${transferPercent(task)}%` }" />
                   <div v-else-if="task.status === 'running'" class="docker-indeterminate transfer-bar-fill transfer-bar-ind" />
                 </div>
+                <div v-if="task.contextLabel" class="transfer-context truncate" :title="task.containerPath">{{ task.contextLabel }} · {{ task.containerPath }}</div>
                 <div class="transfer-meta">
-                  <span class="truncate">{{ t(`transferStatus.${task.status}`) }}</span>
+                  <span class="truncate">{{ task.saving && task.status === 'running' ? local('等待保存', 'Waiting to save') : t(`transferStatus.${task.status}`) }}</span>
                   <span class="transfer-bytes">{{ formatBytes(task.bytesCompleted) }}<template v-if="task.bytesTotal"> / {{ formatBytes(task.bytesTotal) }}</template></span>
                 </div>
                 <div v-if="task.savedPath" class="transfer-saved" :title="task.savedPath">
@@ -1847,55 +1857,7 @@ onUnmounted(() => settleMutation(false));
         </div>
         <div class="detail-body">
           <LoadingSkeleton v-if="detailTab === 'overview' && detailLoading" :rows="8" :columns="2" />
-          <div v-else-if="detailTab === 'overview'" class="detail-overview">
-            <section class="overview-grid">
-              <div class="docker-card">
-                <span>{{ t('fullId') }}</span>
-                <strong class="mono-xs break-all">{{ selectedContainer.id }}</strong>
-              </div>
-              <div class="docker-card">
-                <span>{{ t('image') }}</span>
-                <strong>{{ selectedContainer.image }}</strong>
-                <small class="break-all mono-xs">{{ selectedContainer.imageId }}</small>
-              </div>
-              <div class="docker-card">
-                <span>{{ t('status') }}</span>
-                <strong>{{ selectedContainer.state }}</strong>
-                <small>{{ selectedContainer.status }}</small>
-              </div>
-              <div class="docker-card">
-                <span>{{ t('health') }}</span>
-                <strong>{{ inspect.State?.Health?.Status || '—' }}</strong>
-              </div>
-              <div class="docker-card">
-                <span>{{ t('command') }}</span>
-                <strong class="mono-xs">{{ [inspect.Path, ...(inspect.Args || [])].filter(Boolean).join(' ') || selectedContainer.command }}</strong>
-              </div>
-              <div class="docker-card">
-                <span>{{ t('created') }}</span>
-                <strong>{{ formatDate(selectedContainer.created) }}</strong>
-              </div>
-            </section>
-            <section>
-              <h3 class="section-title">{{ t('environment') }}</h3>
-              <pre class="docker-code">{{ (inspect.Config?.Env || []).join('\n') || '—' }}</pre>
-            </section>
-            <section>
-              <h3 class="section-title">{{ t('mounts') }}</h3>
-              <div class="stack">
-                <div v-for="mount in inspect.Mounts || []" :key="`${mount.Source}-${mount.Destination}`" class="docker-row-value">
-                  {{ mount.Source }} → {{ mount.Destination }} <span class="muted">({{ mount.Mode || mount.Type }})</span>
-                </div>
-                <div v-if="!inspect.Mounts?.length" class="docker-row-value">—</div>
-              </div>
-            </section>
-            <section>
-              <h3 class="section-title">{{ t('networks') }}</h3>
-              <div class="stack">
-                <div v-for="(network, name) in inspect.NetworkSettings?.Networks || {}" :key="String(name)" class="docker-row-value">{{ name }} · {{ network.IPAddress || '—' }}</div>
-              </div>
-            </section>
-          </div>
+          <ContainerOverview v-else-if="detailTab === 'overview'" :container="selectedContainer" :inspect="inspect" :connection-id="connectionId" @copy="copyValue" />
 
           <div v-else-if="detailTab === 'logs'" class="logs-pane">
             <div class="logs-toolbar">
@@ -1913,6 +1875,7 @@ onUnmounted(() => settleMutation(false));
           </div>
 
           <div v-else-if="detailTab === 'monitoring'" class="monitoring-pane">
+            <div class="monitor-heading"><div><h2>{{ local('资源监控', 'Resource monitoring') }}</h2><p>{{ local('CPU、内存与网络 / 磁盘吞吐', 'CPU, memory and network / disk throughput') }}</p></div><span class="monitor-live"><i :class="{ active: isRunning(selectedContainer) }" />{{ isRunning(selectedContainer) ? local('每 2 秒采样', 'Every 2 seconds') : local('容器已停止', 'Container stopped') }}</span></div>
             <div class="monitor-summary">
               <div class="docker-card">
                 <span>CPU</span>
@@ -1932,13 +1895,13 @@ onUnmounted(() => settleMutation(false));
                 <strong class="mono-xs">{{ t('blockReadShort') }} {{ formatRate(latestBlockRate.read) }} · {{ t('blockWriteShort') }} {{ formatRate(latestBlockRate.write) }}</strong>
               </div>
             </div>
-            <div v-if="!trend.length" class="muted-text monitor-empty">{{ t('waitingForLogs') }}</div>
+            <LoadingSkeleton v-if="!trend.length && isRunning(selectedContainer)" :rows="6" :columns="2" /><div v-else-if="!trend.length" class="muted-text monitor-empty">{{ local('启动容器后可查看实时指标', 'Start the container to view live metrics') }}</div>
             <div v-else class="monitoring-grid">
               <MetricChart
                 title="CPU %"
                 :labels="monitorLabels"
                 :series="cpuChartSeries"
-                :max="100"
+                :max="Math.max(100, Math.ceil(Math.max(...trend.map(point => point.cpuPercent)) / 100) * 100)"
                 :axis-interval="25"
                 :value-formatter="(value) => `${value.toFixed(0)}%`"
               />
@@ -2006,24 +1969,12 @@ onUnmounted(() => settleMutation(false));
                   </button>
                 </div>
               </div>
-              <div v-if="fileTransfers.length" class="file-transfers">
-                <div v-for="task in fileTransfers" :key="task.sessionId" class="file-transfer-row" :title="task.savedPath || task.path">
-                  <Icon :name="task.direction === 'upload' ? 'file-up' : 'file-down'" :class="task.direction === 'upload' ? 'transfer-icon-up' : 'transfer-icon-down'" />
-                  <span class="file-transfer-name truncate">{{ task.name }}</span>
-                  <span class="file-transfer-bytes mono-xs">{{ formatBytes(task.bytes) }}<template v-if="task.total"> / {{ formatBytes(task.total) }}</template></span>
-                  <span class="file-transfer-status" :class="`file-transfer-${task.status}`">
-                    <Icon v-if="task.status === 'running'" name="loader-circle" class="spin" />
-                    <template v-else>{{ t(`transferStatus.${task.status}`) }}</template>
-                  </span>
-                  <button v-if="task.status === 'running'" class="docker-copy-button" :title="t('cancel')" @click="cancelFileTransfer(task)"><Icon name="x" /></button>
-                  <div class="file-transfer-bar"><div class="file-transfer-bar-fill" :style="{ width: `${fileTransferPercent(task)}%` }" /></div>
-                </div>
-              </div>
             </div>
             <div class="file-preview">
               <LoadingSkeleton v-if="filePreviewLoading" :rows="10" :columns="1" />
-              <div v-else-if="filePreview?.binary" class="muted-text">{{ t('binaryPreviewUnsupported') }}</div>
-              <pre v-else-if="filePreview" class="file-preview-content">{{ filePreview.content }}<template v-if="filePreview.truncated">…</template></pre>
+              <div v-else-if="filePreview?.dataBase64 && filePreview.mimeType" class="image-preview"><div class="preview-caption truncate">{{ filePreview.path }}</div><img :src="`data:${filePreview.mimeType};base64,${filePreview.dataBase64}`" :alt="filePreview.path" /><span class="hint-text">{{ filePreview.mimeType }}</span></div>
+              <div v-else-if="filePreview?.binary" class="muted-text">{{ filePreview.truncated ? local('文件超出预览上限，请下载查看。', 'File exceeds the preview limit; download to view.') : t('binaryPreviewUnsupported') }}</div>
+              <template v-else-if="filePreview"><div v-if="filePreview.truncated" class="preview-truncated">{{ local('仅预览前 2 MiB；可下载完整文件。', 'Showing the first 2 MiB; download for the complete file.') }}</div><CodeEditor :key="filePreview.path" :model-value="filePreview.content" :path="filePreview.path" read-only height="100%" /></template>
               <div v-else class="file-preview-empty">{{ t('selectFile') }}</div>
             </div>
           </div>
@@ -2063,16 +2014,16 @@ onUnmounted(() => settleMutation(false));
             <colgroup>
               <col v-for="(width, index) in columnWidths.containers" :key="index" :style="{ width: `${width}px` }" />
             </colgroup>
-            <thead @pointerdown="handleHeaderPointer($event, 'containers')">
+            <thead>
               <tr>
-                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('image')">{{ t('image') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('ports')">{{ t('ports') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('cpu')">CPU<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('memory')">{{ t('memory') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('status')">{{ t('status') }}<Icon name="arrow-up-down" /></button></th>
-                <th class="th-right">{{ t('actions') }}</th>
+                <ResizableHeader :width="columnWidths.containers[0]" @resize="resizeColumn('containers', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[1]" @resize="resizeColumn('containers', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[2]" @resize="resizeColumn('containers', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('image')">{{ t('image') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[3]" @resize="resizeColumn('containers', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('ports')">{{ t('ports') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[4]" @resize="resizeColumn('containers', 4, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('cpu')">CPU<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[5]" @resize="resizeColumn('containers', 5, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('memory')">{{ t('memory') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.containers[6]" @resize="resizeColumn('containers', 6, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('status')">{{ t('status') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader class="th-right" :width="columnWidths.containers[7]" @resize="resizeColumn('containers', 7, $event)" @commit="saveColumnWidths">{{ t('actions') }}</ResizableHeader>
               </tr>
             </thead>
             <tbody>
@@ -2109,7 +2060,7 @@ onUnmounted(() => settleMutation(false));
                       ><button class="docker-copy-button" :title="t('copy')" @click="copyValue(container.image)"><Icon name="copy" /></button>
                     </div>
                   </td>
-                  <td :title="formatPorts(container)"><div class="docker-truncated-cell mono-xs">{{ formatPorts(container) }}</div></td>
+                  <td><ContainerPorts :container="container" :connection-id="connectionId" /></td>
                   <td>{{ listStats[container.id] ? `${listStats[container.id].cpuPercent.toFixed(1)}%` : '—' }}</td>
                   <td>{{ listStats[container.id] ? `${formatBytes(listStats[container.id].memoryUsage)} / ${formatBytes(listStats[container.id].memoryLimit)}` : '—' }}</td>
                   <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
@@ -2152,7 +2103,7 @@ onUnmounted(() => settleMutation(false));
                     ><button class="docker-copy-button" :title="t('copy')" @click="copyValue(container.image)"><Icon name="copy" /></button>
                   </div>
                 </td>
-                <td :title="formatPorts(container)"><div class="docker-truncated-cell mono-xs">{{ formatPorts(container) }}</div></td>
+                <td><ContainerPorts :container="container" :connection-id="connectionId" /></td>
                 <td>{{ listStats[container.id] ? `${listStats[container.id].cpuPercent.toFixed(1)}%` : '—' }}</td>
                 <td>{{ listStats[container.id] ? `${formatBytes(listStats[container.id].memoryUsage)} / ${formatBytes(listStats[container.id].memoryLimit)}` : '—' }}</td>
                 <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
@@ -2182,13 +2133,13 @@ onUnmounted(() => settleMutation(false));
             <colgroup>
               <col v-for="(width, index) in columnWidths.images" :key="index" :style="{ width: `${width}px` }" />
             </colgroup>
-            <thead @pointerdown="handleHeaderPointer($event, 'images')">
+            <thead>
               <tr>
-                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('repositoryTag') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('size')">{{ t('size') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('created')">{{ t('created') }}<Icon name="arrow-up-down" /></button></th>
-                <th class="th-right">{{ t('actions') }}</th>
+                <ResizableHeader :width="columnWidths.images[0]" @resize="resizeColumn('images', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('repositoryTag') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.images[1]" @resize="resizeColumn('images', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.images[2]" @resize="resizeColumn('images', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('size')">{{ t('size') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.images[3]" @resize="resizeColumn('images', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('created')">{{ t('created') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader class="th-right" :width="columnWidths.images[4]" @resize="resizeColumn('images', 4, $event)" @commit="saveColumnWidths">{{ t('actions') }}</ResizableHeader>
               </tr>
             </thead>
             <tbody>
@@ -2226,12 +2177,12 @@ onUnmounted(() => settleMutation(false));
             <colgroup>
               <col v-for="(width, index) in columnWidths.volumes" :key="index" :style="{ width: `${width}px` }" />
             </colgroup>
-            <thead @pointerdown="handleHeaderPointer($event, 'volumes')">
+            <thead>
               <tr>
-                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('mountpoint')">{{ t('mountpoint') }}<Icon name="arrow-up-down" /></button></th>
+                <ResizableHeader :width="columnWidths.volumes[0]" @resize="resizeColumn('volumes', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.volumes[1]" @resize="resizeColumn('volumes', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.volumes[2]" @resize="resizeColumn('volumes', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.volumes[3]" @resize="resizeColumn('volumes', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('mountpoint')">{{ t('mountpoint') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
               </tr>
             </thead>
             <tbody>
@@ -2248,14 +2199,14 @@ onUnmounted(() => settleMutation(false));
             <colgroup>
               <col v-for="(width, index) in columnWidths.networks" :key="index" :style="{ width: `${width}px` }" />
             </colgroup>
-            <thead @pointerdown="handleHeaderPointer($event, 'networks')">
+            <thead>
               <tr>
-                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('internal')">{{ t('internal') }}<Icon name="arrow-up-down" /></button></th>
-                <th><button class="docker-sort" @click="toggleSort('attachable')">{{ t('attachable') }}<Icon name="arrow-up-down" /></button></th>
+                <ResizableHeader :width="columnWidths.networks[0]" @resize="resizeColumn('networks', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.networks[1]" @resize="resizeColumn('networks', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.networks[2]" @resize="resizeColumn('networks', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.networks[3]" @resize="resizeColumn('networks', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.networks[4]" @resize="resizeColumn('networks', 4, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('internal')">{{ t('internal') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <ResizableHeader :width="columnWidths.networks[5]" @resize="resizeColumn('networks', 5, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('attachable')">{{ t('attachable') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
               </tr>
             </thead>
             <tbody>
@@ -2327,7 +2278,7 @@ onUnmounted(() => settleMutation(false));
         <LoadingSkeleton v-if="composeLoading" :rows="8" :columns="1" />
         <p v-if="composeError" class="error-text" role="alert">{{ composeError }}</p>
         <label class="docker-field"><span>{{ t('composeProject') }}</span><input v-model="composeDraft.projectName" class="input" :disabled="!!composeEditingProject" placeholder="my-project" /></label>
-        <label v-if="!composeLoading" class="docker-field"><span>compose.yaml</span><textarea v-model="composeDraft.content" rows="20" class="docker-textarea compose-editor" spellcheck="false" /></label>
+        <CodeEditor v-if="!composeLoading" v-model="composeDraft.content" path="compose.yaml" height="420px" />
         <p v-if="composeEditingProject" class="hint-text">{{ local('根据当前容器配置生成 YAML，原文件的注释与变量不可恢复。保存前请检查；不支持的配置会在预览时提示。', 'YAML is generated from current containers; original comments and variables are unavailable. Review before saving; unsupported settings are rejected during preview.') }}</p>
         <p class="hint-text">{{ t('composeSubsetHint') }}</p>
       </div>

@@ -186,10 +186,12 @@ type DockerFileEntry struct {
 }
 
 type DockerFilePreview struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
-	Binary    bool   `json:"binary"`
+	MimeType   string `json:"mimeType,omitempty"`
+	DataBase64 string `json:"dataBase64,omitempty"`
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	Truncated  bool   `json:"truncated"`
+	Binary     bool   `json:"binary"`
 }
 
 // ---------- system df / prune ----------

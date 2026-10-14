@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"path"
 	"sort"
 	"strconv"
@@ -154,6 +156,10 @@ func (p *plugin) previewContainerFile(sess *session, raw json.RawMessage) (any, 
 	if err != nil {
 		return nil, fmt.Errorf("Container file preview requires /bin/sh and head: %w", err)
 	}
+	return containerFilePreview(in.Path, output), nil
+}
+
+func containerFilePreview(filePath string, output []byte) DockerFilePreview {
 	truncated := len(output) > filePreviewLimit
 	if truncated {
 		output = output[:filePreviewLimit]
@@ -163,10 +169,20 @@ func (p *plugin) previewContainerFile(sess *session, raw json.RawMessage) (any, 
 	if !binary {
 		content = string(output)
 	}
-	return DockerFilePreview{
-		Path:      in.Path,
+	preview := DockerFilePreview{
+		Path:      filePath,
 		Content:   content,
 		Truncated: truncated,
 		Binary:    binary,
-	}, nil
+	}
+	mimeType := http.DetectContentType(output)
+	switch mimeType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon":
+		if !truncated {
+			preview.MimeType = mimeType
+			preview.DataBase64 = base64.StdEncoding.EncodeToString(output)
+			preview.Content = ""
+		}
+	}
+	return preview
 }

@@ -47,6 +47,7 @@ interface FileListener {
 }
 
 export interface FileEvent {
+  cancelled?: boolean;
   chunk: Uint8Array;
   done: boolean;
   bytesReceived: number;
@@ -87,6 +88,7 @@ function handleFileFrame(data: Uint8Array) {
   listener.onEvent({
     chunk,
     done,
+    cancelled: header.status === 'cancelled',
     bytesReceived: state.bytesReceived,
     size: header.size ?? 0,
     error: header.status === 'error' ? header.error || 'file download failed' : null,

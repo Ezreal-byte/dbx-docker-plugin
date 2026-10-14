@@ -15,7 +15,7 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.2.1"
+	pluginVersion = "0.2.2"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。
@@ -144,6 +144,8 @@ func (p *plugin) dispatchSession(method string, sess *session, raw json.RawMessa
 		return p.getEngineDetails(sess)
 	case "docker/listContainers":
 		return p.listContainers(sess, raw)
+	case "docker/openContainerPort":
+		return p.openContainerPort(sess, raw)
 	case "docker/containerAction":
 		return p.containerAction(sess, raw)
 	case "docker/inspectContainer":

@@ -47,9 +47,11 @@ export async function sendExecBytes(
   sessionId: string,
   bytes: Uint8Array,
   onProgress?: (sent: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const total = bytes.length;
   for (let offset = 0; offset < total; offset += UPLOAD_CHUNK_BYTES) {
+    if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
     const end = Math.min(offset + UPLOAD_CHUNK_BYTES, total);
     await sendFrame(sessionId, bytes.subarray(offset, end));
     onProgress?.(end, total);
