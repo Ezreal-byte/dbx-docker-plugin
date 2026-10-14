@@ -4,7 +4,7 @@
   "name": "Docker",
   "version": "0.3.0",
   "publisher": "ezreal-byte",
-  "description": "Docker Engine workbench: containers, images, volumes, networks, logs, files, monitoring and Compose apply.",
+  "description": "Manage Docker containers, images, volumes, networks and Compose, with built-in DBX AI and MCP tools for queries and permission-controlled operations.",
   "icon": "assets/plugin.svg",
   "permissions": [
     "host.workbench",
@@ -397,7 +397,7 @@
   "localizations": {
     "zh-CN": {
       "name": "Docker",
-      "description": "Docker Engine 工作台：容器、镜像、卷、网络、日志、文件、监控与 Compose 应用。",
+      "description": "Docker 管理工作台：容器、镜像、卷、网络、日志、文件、监控与 Compose；支持 DBX 内置 AI 和 MCP 查询及按连接授权的管理操作。",
       "contributions": {
         "io.dbx.docker.connection": {
           "label": "Docker",

@@ -1,18 +1,28 @@
 # Docker for DBX
 
-`io.dbx.docker` adds a Docker Engine connection and workbench to DBX. The backend is a Go sidecar using the Docker SDK; the UI is a Vue workbench packaged into a `.dbxp` file.
+`io.dbx.docker` adds a Docker Engine connection and workbench to DBX, with built-in DBX AI and external MCP tools for queries and permission-controlled management. The backend is a Go sidecar using the Docker SDK; the UI is a Vue workbench packaged into a `.dbxp` file.
 
 The workbench lists containers, images, volumes, and networks. It supports container lifecycle and creation, container rename, image pull/push/export, image tagging and per-tag removal, image layer history, live logs, container resource monitoring, container file browsing with upload and download, an interactive container terminal, engine disk usage with pruning, and a controlled subset of Compose YAML. It was adapted from the unmerged DBX Docker workbench branch. The source branch remains available for comparison at [`Ezreal-byte/dbx` (`codex/feature-docker-workbench`)](https://github.com/Ezreal-byte/dbx/tree/codex/feature-docker-workbench).
 
 The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the host initialization handshake and re-applies the language on `dbx-plugin-init` / `dbx-plugin-env`, so switching the DBX language updates the workbench without a reload.
 
-## 0.3.0 Windows verification candidate
+## Built-in AI and MCP operations
 
+- **DBX built-in AI:** open a Docker connection, enable its **AI/MCP permissions**, enable the plugin's AI tools in DBX, and select **Agent** mode. Ask it to list containers, analyze health and bounded logs, or explain which containers use a network or volume.
+- **External MCP:** connect your client to **DBX MCP**, authorize the Docker connection and tools in DBX, and select the saved connection through `dbx_connection`. The plugin reuses DBX MCP; no separate MCP service or port is needed. Reconnect the client after installation or permission changes to refresh its tool list.
+- **Controlled management:** separately authorize container lifecycle actions, image pulls/tags, network attachment, resource creation, Compose deployment, deletion and cleanup. Permissions are off by default and isolated by connection. Both AI entry points share backend checks; DBX read-only restrictions, allowlists and tool approvals still apply. Destructive tools require a bound preview before execution.
+- Example prompts: “列出正在运行的容器”, “分析这个容器退出的原因”, “这个卷被哪些容器使用？” and, after granting the relevant permissions, “重启测试容器，操作前让我确认” or “预览清理未使用的网络”. Interactive terminals and file writes remain workbench-only.
+- [AI/MCP 使用、权限与工具说明（中文）](docs/AI-MCP.md)
+
+## 0.3.0 — 2026-10-14
+
+- Larger, centered Docker icon and updated descriptions for built-in AI / external MCP operations.
+- Today's workbench improvements include theme-aware Compose group rows, compact tables, clearable search, highlighted port shortcuts, YAML Compose editing, refreshed overview/monitoring, container file menus/previews and unified transfer tasks. Column resizing was removed following feedback.
 - Destructive workbench RPCs now enforce bound previews, including legacy deletion endpoints, tag replacement and network disconnect. Read-only flags use the current host lifecycle.
 - File uploads require a backend preview; replacing a file asks for confirmation. Uploads stage data and verify the original target before committing, preserving it on interruption.
 - Confirmation dialogs stay above editors, keep keyboard focus inside, and cancel on Escape. Pause and image push also require confirmation.
 - Push and pull-request CI verifies Windows/Linux, runs a disposable-container safety check on Linux, and saves the Windows package as an Actions artifact.
-- [0.3.0 safety audit and verification](docs/0.3.0-audit.md)
+- [完整更新日志（中文）](CHANGELOG.md) · [0.3.0 safety audit and verification](docs/0.3.0-audit.md)
 
 ### Previous 0.2.3 changes
 
@@ -105,7 +115,7 @@ Container monitoring renders with ECharts (canvas), not a scaled SVG, in a fixed
 
 ## Files in a container
 
-The **Files** tab browses read-only, and additionally supports **download** (per file) and **upload** (multi-select, into the current directory). Downloads stream over the `docker-file` binary channel and land through the same native save dialog as image export; uploads stream the local file's bytes into the container as `docker exec` stdin, where a fixed `head -c <size> > <path>` script writes it. Both directions are capped at 256 MiB, require `/bin/sh`, and uploads additionally require `head`.
+The **Files** tab supports browsing, image/config previews, a context menu for downloads (folders as `.tar`), uploads, file/folder creation, rename and deletion. Uploads and downloads share the header's transfer list. Downloads stream over the `docker-file` binary channel and use the native save dialog; uploads require a backend preview, stage data in the destination directory, verify the byte count and target state, then commit. Overwrites ask for confirmation and interrupted uploads preserve the original file. Both directions are capped at 256 MiB and require `/bin/sh` plus the file commands used by the operation, including `stat`, `head`, `mktemp`, `ln` and `mv` for uploads.
 
 ## Image export and where files land
 
@@ -175,7 +185,7 @@ node scripts/check-dbx-connection-contract.mjs ../dbx upstream/main
 
 The connection audit was checked against DBX 0.6.43 (`0db01f7f284ec6b0b090fe7369de7d05c37b25b0`). The script loads the real upstream evaluator and serializer without changing the DBX checkout.
 
-**Validation gate:** this version is delivered as a Windows candidate first. Publish other platform candidates and update the store PR only after user validation.
+Version 0.3.0 completes the Windows verification and safety audit stage. The [GitHub Release](https://github.com/Ezreal-byte/dbx-docker-plugin/releases/tag/v0.3.0) supplies platform candidates; these remain unsigned until DBX Store review and signing.
 
 Publishing a GitHub Release triggers `.github/workflows/release.yml` to build separate native candidates for Windows, macOS, and Linux. Release assets and `release-candidates.json` are the inputs to a candidate PR in [`t8y2/dbx-store`](https://github.com/t8y2/dbx-store). The store signs approved bytes; this repository contains no signing key.
 
