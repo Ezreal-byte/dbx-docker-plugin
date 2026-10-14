@@ -20,6 +20,11 @@ export interface PluginEnvPayload {
 }
 
 interface DbxPlugin {
+  capabilities?: { aiRecommendations?: boolean };
+  ai?: {
+    setRecommendations(value: { context: { resource: { kind: string; id: string } }; items: { id: string; label: string; prompt: string; order: number }[] }): Promise<unknown>;
+    clearRecommendations(): Promise<unknown>;
+  };
   ready: Promise<unknown>;
   context: PluginContext;
   locale?: string;

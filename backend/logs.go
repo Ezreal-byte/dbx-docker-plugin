@@ -70,9 +70,9 @@ func decodeMultiplexedBytes(data []byte) []byte {
 
 func (p *plugin) startLogs(sess *session, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
 	var in struct {
-		ContainerID string          `json:"containerId"`
+		ContainerID string           `json:"containerId"`
 		Options     DockerLogOptions `json:"options"`
-		SessionID   string          `json:"sessionId"`
+		SessionID   string           `json:"sessionId"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil || in.ContainerID == "" {
 		return nil, errors.New("startLogs requires containerId")

@@ -22,11 +22,13 @@ type runtimeEndpoint struct {
 
 // connectionPayload 是宿主下发的完整 ConnectionConfig 中本插件关心的部分。
 type connectionPayload struct {
+	PluginID        string            `json:"plugin_id"`
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
 	Host            string            `json:"host"`
 	Port            int               `json:"port"`
 	ReadOnly        bool              `json:"read_only"`
+	IsProduction    bool              `json:"is_production"`
 	Color           string            `json:"color"`
 	ExternalConfig  map[string]any    `json:"external_config"`
 	Secrets         map[string]string `json:"connection_secrets"`
@@ -37,6 +39,7 @@ type connectionPayload struct {
 type pluginConfig struct {
 	Protocol                string `json:"protocol"`
 	SocketPath              string `json:"socket_path"`
+	PipePath                string `json:"pipe_path"`
 	APIVersion              string `json:"api_version"`
 	AllowInsecureRemoteHTTP bool   `json:"allow_insecure_remote_http"`
 	CACertPath              string `json:"ca_cert_path"`
@@ -55,6 +58,7 @@ func (c connectionPayload) config() pluginConfig {
 	cfg := pluginConfig{
 		Protocol:   "http",
 		SocketPath: "/var/run/docker.sock",
+		PipePath:   "//./pipe/docker_engine",
 		APIVersion: "auto",
 		SSHPort:    22,
 	}
@@ -69,6 +73,7 @@ func (c connectionPayload) config() pluginConfig {
 	}
 	get("protocol", &cfg.Protocol)
 	get("socket_path", &cfg.SocketPath)
+	get("pipe_path", &cfg.PipePath)
 	get("api_version", &cfg.APIVersion)
 	get("ca_cert_path", &cfg.CACertPath)
 	get("client_cert_path", &cfg.ClientCertPath)
@@ -77,8 +82,12 @@ func (c connectionPayload) config() pluginConfig {
 	get("ssh_username", &cfg.SSHUsername)
 	get("ssh_private_key_path", &cfg.SSHPrivateKeyPath)
 	get("ssh_known_hosts_path", &cfg.SSHKnownHostsPath)
-	if v, ok := raw["ssh_port"].(float64); ok && v > 0 {
+	if v, ok := raw["ssh_port"].(float64); ok {
+		// 缺省使用 22；显式的无效值由 validateConfig 拒绝，避免悄悄连到其他端口。
 		cfg.SSHPort = int(v)
+		if v != float64(cfg.SSHPort) {
+			cfg.SSHPort = -1
+		}
 	}
 	if v, ok := raw["allow_insecure_remote_http"].(bool); ok {
 		cfg.AllowInsecureRemoteHTTP = v
@@ -95,6 +104,10 @@ func (c connectionPayload) config() pluginConfig {
 // effectiveReadOnly 与 xxl-job 先例一致：内建 read_only 与插件自声明字段取或。
 func (c connectionPayload) effectiveReadOnly() bool {
 	return c.ReadOnly || c.config().ReadOnly
+}
+
+func (c connectionPayload) effectiveProduction() bool {
+	return c.IsProduction || c.config().IsProduction
 }
 
 func (c connectionPayload) secret(key string) string {

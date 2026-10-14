@@ -29,9 +29,9 @@ type DockerEngineSummary struct {
 }
 
 type DockerEngineDetails struct {
-	Version map[string]any       `json:"version"`
-	Info    map[string]any       `json:"info"`
-	Summary DockerEngineSummary  `json:"summary"`
+	Version map[string]any      `json:"version"`
+	Info    map[string]any      `json:"info"`
+	Summary DockerEngineSummary `json:"summary"`
 }
 
 type DockerPort struct {
@@ -42,17 +42,17 @@ type DockerPort struct {
 }
 
 type DockerContainer struct {
-	ID          string            `json:"id"`
-	Names       []string          `json:"names"`
-	Image       string            `json:"image"`
-	ImageID     string            `json:"imageId"`
-	Command     string            `json:"command"`
-	Created     int64             `json:"created"`
-	State       string            `json:"state"`
-	Status      string            `json:"status"`
-	Ports       []DockerPort      `json:"ports"`
-	Labels      map[string]string `json:"labels"`
-	NetworkIPs  map[string]string `json:"networkIps"`
+	ID         string            `json:"id"`
+	Names      []string          `json:"names"`
+	Image      string            `json:"image"`
+	ImageID    string            `json:"imageId"`
+	Command    string            `json:"command"`
+	Created    int64             `json:"created"`
+	State      string            `json:"state"`
+	Status     string            `json:"status"`
+	Ports      []DockerPort      `json:"ports"`
+	Labels     map[string]string `json:"labels"`
+	NetworkIPs map[string]string `json:"networkIps"`
 }
 
 type DockerImage struct {

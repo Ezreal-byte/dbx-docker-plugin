@@ -15,14 +15,39 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.1.4"
+	pluginVersion = "0.2.0"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。
 type session struct {
-	client *dockerClient
-	conn   connectionPayload
-	mu     sync.Mutex // 串行化同一会话上的写操作
+	client        *dockerClient
+	conn          connectionPayload
+	mu            sync.Mutex // 串行化同一会话上的写操作
+	parent        *session
+	ctx           context.Context
+	lockHeld      bool
+	mutationScope any
+}
+
+func (s *session) context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+type heldLock struct{}
+
+func (heldLock) Lock()   {}
+func (heldLock) Unlock() {}
+func (s *session) writeMutex() sync.Locker {
+	if s.lockHeld {
+		return heldLock{}
+	}
+	if s.parent != nil {
+		return s.parent.writeMutex()
+	}
+	return &s.mu
 }
 
 type plugin struct {
@@ -31,6 +56,7 @@ type plugin struct {
 	sessions  map[string]*session
 	streams   *streamRegistry
 	execs     *execRegistry
+	dataDir   string
 }
 
 func newPlugin() *plugin {
@@ -38,6 +64,7 @@ func newPlugin() *plugin {
 		sessions: map[string]*session{},
 		streams:  newStreamRegistry(),
 		execs:    newExecRegistry(),
+		dataDir:  os.Getenv("DBX_PLUGIN_DATA_DIR"),
 	}
 }
 
@@ -69,6 +96,16 @@ func (p *plugin) Handle(_ sdk.RequestContext, method string, raw json.RawMessage
 
 func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
 	switch method {
+	case "mcp/tools":
+		return p.mcpTools(v.ConnectionID), nil
+	case "mcp/call":
+		return p.mcpCall(raw), nil
+	case "mcp/settings/get":
+		return p.settingsGet(v.ConnectionID)
+	case "mcp/settings/set":
+		return p.settingsSet(raw)
+	case "docker/taskList", "docker/taskStatus", "docker/taskCancel", "docker/auditList":
+		return p.taskRPC(method, v.ConnectionID, raw)
 	case "connection/test":
 		p.lifecycle.Lock()
 		defer p.lifecycle.Unlock()
@@ -90,8 +127,17 @@ func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter 
 	if err != nil {
 		return nil, err
 	}
+	return p.dispatchSession(method, sess, raw, emitter)
+}
 
+func (p *plugin) dispatchSession(method string, sess *session, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
 	switch method {
+	case "docker/mutation":
+		return p.mutationRPC(sess, raw)
+	case "docker/events":
+		return p.resourceOperation(method, sess, raw)
+	case "docker/inspectImage", "docker/inspectNetwork", "docker/inspectVolume", "docker/containerLogs", "docker/containerHealth", "docker/composePreview", "docker/removeNetwork", "docker/removeVolume", "docker/connectNetwork", "docker/disconnectNetwork":
+		return p.resourceOperation(method, sess, raw)
 	case "docker/getConnectionInfo":
 		return p.getConnectionInfo(sess)
 	case "docker/getEngineDetails":
@@ -206,12 +252,12 @@ func (p *plugin) getConnectionInfo(sess *session) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg := sess.client.cfg
 	return map[string]any{
 		"success":      true,
 		"info":         info,
 		"readOnly":     sess.conn.effectiveReadOnly(),
-		"isProduction": cfg.IsProduction,
+		"isProduction": sess.conn.effectiveProduction(),
+		"capabilities": map[string]any{"protocol": sess.client.cfg.Protocol, "mcp": true, "namedPipe": namedPipeSupported()},
 		"color":        sess.conn.Color,
 		"name":         sess.conn.Name,
 	}, nil

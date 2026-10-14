@@ -474,3 +474,6 @@ input, textarea, select { font: inherit; color: var(--foreground); }
   padding: 10px 14px; font-size: 0.8rem; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
   white-space: pre-wrap; word-break: break-word;
 }
+/* Resource names open inspect and relationship details. */
+.resource-link { color: var(--accent, #0891b2); background: transparent; border: 0; padding: 0; text-align: left; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.resource-link:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

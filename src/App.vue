@@ -4,7 +4,7 @@
 // ui/* 组件 → 本地组件 + .docker-* CSS（style.css）；read_only/is_production 从后端快照获取。
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { currentLocale, getPlugin, type PluginEnvPayload } from './bridge';
-import { setLocale, t } from './i18n';
+import { locale, setLocale, t } from './i18n';
 import * as api from './api';
 import { initStreams, registerExecStream, registerExportStream, registerFileStream, registerTransferStream, startLogStream, unregisterStream, type ExportProgress } from './streams';
 import { sendExecBytes } from './exec';
@@ -44,6 +44,10 @@ import MetricChart, { type MetricSeries } from './components/MetricChart.vue';
 import JsonTree from './components/JsonTree.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import ContainerTerminal from './components/ContainerTerminal.vue';
+import AutomationPanel from './components/AutomationPanel.vue';
+import ResourceDetails from './components/ResourceDetails.vue';
+import { local, recommendations, mutationPreview, mutationExecute, type MutationPreview, type Task } from './automation';
+import { invoke } from './bridge';
 
 type ResourceKind = 'containers' | 'images' | 'volumes' | 'networks';
 type ContainerFilter = 'all' | 'running' | 'stopped';
@@ -57,6 +61,11 @@ const loading = ref(false);
 const error = ref('');
 const query = ref('');
 const connectionId = ref('');
+const connectionName = ref('');
+const resourceDetailsOpen = ref(false);
+const resourceDetailsKind = ref('images');
+const resourceDetailsId = ref('');
+function openResourceDetails(kind: string, id: string) { selectedRowKey.value = id; resourceDetailsKind.value = kind; resourceDetailsId.value = id; resourceDetailsOpen.value = true; }
 const isReadOnly = ref(false);
 const isProduction = ref(false);
 const engineInfo = ref<api.ConnectionInfoResult['info']>();
@@ -163,6 +172,7 @@ const diskUsageLoading = ref(false);
 const diskUsageError = ref('');
 const pruneChoice = ref<PruneChoice>('containers');
 const prunePreview = ref<DockerPrunePreview>();
+const boundPrunePreview = ref<MutationPreview>();
 const prunePreviewLoading = ref(false);
 const prunePreviewError = ref('');
 const pruneConfirmText = ref('');
@@ -293,7 +303,12 @@ async function loadPrunePreview() {
   prunePreviewLoading.value = true;
   prunePreviewError.value = '';
   try {
-    prunePreview.value = await api.prunePreview(connectionId.value, apiPruneTarget(pruneChoice.value), pruneChoiceIsAll(pruneChoice.value));
+    boundPrunePreview.value = undefined;
+    if (isReadOnly.value) prunePreview.value = await api.prunePreview(connectionId.value, apiPruneTarget(pruneChoice.value), pruneChoiceIsAll(pruneChoice.value));
+    else {
+      const preview = await mutationPreview(connectionId.value, 'prune_resources', { target: apiPruneTarget(pruneChoice.value), all: pruneChoiceIsAll(pruneChoice.value) });
+      boundPrunePreview.value = preview; prunePreview.value = preview.preview as DockerPrunePreview;
+    }
   } catch (cause: any) {
     prunePreview.value = undefined;
     prunePreviewError.value = cause?.message || String(cause);
@@ -325,15 +340,11 @@ async function executePrune() {
   const expected = prunePreview.value?.count ?? 0;
   pruneRunning.value = true;
   try {
-    const result = await api.prune(connectionId.value, apiPruneTarget(choice), pruneChoiceIsAll(choice));
-    const count = result.deleted?.length ?? 0;
-    if (!count && !result.spaceReclaimed) toast(t('pruneNothing'), 2400);
-    else toast(t('pruneDone', { count, size: formatBytes(result.spaceReclaimed || 0) }), 4000);
-    pruneConfirmText.value = '';
-    await loadDiskUsage();
-    await loadPrunePreview();
-    await loadResource();
-    if (count !== expected) toast(t('pruneCountMismatch', { expected, actual: count }), 6000);
+    if (!boundPrunePreview.value) return;
+    const result = await mutationExecute<{ taskId: string }>(connectionId.value, 'prune_resources', { target: apiPruneTarget(choice), all: pruneChoiceIsAll(choice) }, boundPrunePreview.value);
+    boundPrunePreview.value = undefined; prunePreview.value = undefined; pruneConfirmText.value = '';
+    diskUsageOpen.value = false;
+    notifyTask(result.taskId);
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
   } finally {
@@ -844,10 +855,11 @@ async function runAction(container: DockerContainer, action: DockerContainerActi
 
 async function removeContainer(container: DockerContainer) {
   if (isReadOnly.value || actionInFlight.value[container.id]) return;
-  if (!(await confirmAction(container, 'remove'))) return;
   actionInFlight.value = { ...actionInFlight.value, [container.id]: 'remove' };
   try {
-    await api.removeContainer(connectionId.value, container.id);
+    const args = { containerId: container.id };
+    const preview = await previewAndConfirm('remove_container', args); if (!preview) return;
+    await mutationExecute(connectionId.value, 'remove_container', args, preview);
     toast(t('containerRemoved', { name: containerName(container) }), 2400);
     await loadContainers();
     lastRefreshAt.value = new Date();
@@ -1001,8 +1013,6 @@ async function openComposeEditor(project = '') {
 
 async function applyCompose() {
   const editing = !!composeEditingProject.value;
-  if (!(await confirmProductionMutation(editing ? t('editCompose') : t('createCompose')))) return;
-  if (editing && !(await requestConfirmation(t('confirmComposeReplace', { project: composeEditingProject.value })))) return;
   submitting.value = true;
   try {
     const request: DockerComposeApplyRequest = {
@@ -1010,11 +1020,9 @@ async function applyCompose() {
       content: composeDraft.value.content,
       replaceExisting: editing,
     };
-    const result = await api.applyCompose(connectionId.value, request);
-    createContainerOpen.value = false;
-    toast(t(editing ? 'composeUpdated' : 'composeCreated', { count: result.containerIds.length }), 3000);
-    if (result.warnings.length) toast(result.warnings.join('\n'), 5000);
-    await loadContainers();
+    const preview = await previewAndConfirm('apply_compose', { request }); if (!preview) return;
+    const result = await mutationExecute<{ taskId: string }>(connectionId.value, 'apply_compose', { request }, preview);
+    createContainerOpen.value = false; notifyTask(result.taskId);
   } catch (cause: any) {
     toast(cause?.message || String(cause), 5000);
   } finally {
@@ -1239,10 +1247,11 @@ async function cancelActiveTransfers() {
 
 async function removeImage(item: DockerImage) {
   if (imageActionInFlight.value[item.id]) return;
-  if (!(await requestConfirmation(t('confirmImageRemove', { name: item.repoTags[0] || shortId(item.id) })))) return;
   imageActionInFlight.value = { ...imageActionInFlight.value, [item.id]: 'remove' };
   try {
-    await api.removeImage(connectionId.value, item.id);
+    const args = { imageId: item.id };
+    const preview = await previewAndConfirm('remove_image', args); if (!preview) return;
+    await mutationExecute(connectionId.value, 'remove_image', args, preview);
     toast(t('imageRemoved'), 2400);
     await loadResource('images');
   } catch (cause: any) {
@@ -1676,6 +1685,7 @@ onMounted(async () => {
   await plugin.ready;
   applyHostLocale();
   const context = plugin.context;
+  connectionName.value = context.connection?.name || '';
   connectionId.value = context.connectionId || context.connection?.id || '';
   initStreams(connectionId.value);
   document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -1699,6 +1709,25 @@ onUnmounted(() => {
   void stopImagePull();
   void cancelActiveTransfers();
 });
+watch([connectionId, resource, selectedRowKey, selectedContainerId, locale], () => {
+  const plugin = getPlugin();
+  if (!connectionId.value || !plugin.capabilities?.aiRecommendations || !plugin.ai) return;
+  const id = selectedContainerId.value || selectedRowKey.value;
+  void plugin.ai.setRecommendations(recommendations(resource.value, id, locale.value === 'zh-CN')).catch(() => {});
+});
+onUnmounted(() => { const plugin = getPlugin(); void plugin.ai?.clearRecommendations().catch(() => {}); });
+
+const mutationDialog = ref(false), pendingPreview = ref<MutationPreview>(), pendingOperation = ref('');
+let resolveMutation: ((confirmed: boolean) => void) | undefined;
+async function previewAndConfirm(operation: string, args: Record<string, unknown>) {
+  const preview = await mutationPreview(connectionId.value, operation, args);
+  pendingPreview.value = preview; pendingOperation.value = operation; mutationDialog.value = true;
+  return (await new Promise<boolean>(resolve => { resolveMutation = resolve; })) ? preview : undefined;
+}
+function settleMutation(confirmed: boolean) { mutationDialog.value = false; resolveMutation?.(confirmed); resolveMutation = undefined; }
+function notifyTask(id: string) { toast(local('任务已提交：', 'Task started: ') + id, 4000); window.dispatchEvent(new CustomEvent('docker-task-started')); }
+watch(mutationDialog, value => { if (!value) settleMutation(false); });
+onUnmounted(() => settleMutation(false));
 </script>
 
 <template>
@@ -1710,6 +1739,7 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="header-actions">
+        <AutomationPanel :connection-id="connectionId" :name="connectionName" :read-only="isReadOnly" :production="isProduction" />
         <button class="icon-btn icon-cyan" :title="t('engineJson')" @click="loadEngineDetails('json')"><Icon name="settings" /></button>
         <button class="icon-btn icon-amber" :title="t('engineInformation')" @click="loadEngineDetails('summary')"><Icon name="circle-help" /></button>
         <button class="icon-btn icon-emerald" :title="t('diskUsage')" @click="openDiskUsage"><Icon name="hard-drive" /></button>
@@ -2112,7 +2142,7 @@ onUnmounted(() => {
               <tr v-for="item in filteredImages" :key="item.id" :class="{ 'row-selected': selectedRowKey === item.id }" @click="selectedRowKey = item.id">
                 <td :title="item.repoTags.join(', ')">
                   <div class="docker-copy-cell docker-truncated-cell">
-                    <span class="truncate">{{ item.repoTags.join(', ') || '<none>' }}</span
+                    <button class="resource-link truncate" @click.stop="openResourceDetails('images', item.id)">{{ item.repoTags.join(', ') || '<none>' }}</button
                     ><button class="docker-copy-button" :title="t('copy')" @click="copyValue(item.repoTags.join(', ') || item.id)"><Icon name="copy" /></button>
                   </div>
                 </td>
@@ -2153,7 +2183,7 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr v-for="item in filteredVolumes" :key="item.name" :class="{ 'row-selected': selectedRowKey === item.name }" @click="selectedRowKey = item.name">
-                <td class="cell-strong" :title="item.name"><div class="docker-truncated-cell">{{ item.name }}</div></td>
+                <td class="cell-strong" :title="item.name"><button class="resource-link docker-truncated-cell" @click.stop="openResourceDetails('volumes', item.name)">{{ item.name }}</button></td>
                 <td><div class="docker-truncated-cell">{{ item.driver }}</div></td>
                 <td><div class="docker-truncated-cell">{{ item.scope }}</div></td>
                 <td class="mono-xs" :title="item.mountpoint"><div class="docker-truncated-cell">{{ item.mountpoint }}</div></td>
@@ -2177,7 +2207,7 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr v-for="item in filteredNetworks" :key="item.id" :class="{ 'row-selected': selectedRowKey === item.id }" @click="selectedRowKey = item.id">
-                <td class="cell-strong">{{ item.name }}</td>
+                <td class="cell-strong"><button class="resource-link" @click.stop="openResourceDetails('networks', item.id)">{{ item.name }}</button></td>
                 <td class="mono-xs">{{ shortId(item.id) }}</td>
                 <td>{{ item.driver }}</td>
                 <td>{{ item.scope }}</td>
@@ -2190,6 +2220,13 @@ onUnmounted(() => {
       </template>
     </main>
 
+    <Dialog :open="mutationDialog" content-class="dlg-wide automation-dialog" @update:open="settleMutation(false)">
+      <div class="dlg-header"><div class="dlg-title">{{ local('操作预览', 'Operation preview') }} · {{ pendingOperation }}</div><div class="dlg-desc">{{ connectionName || connectionId }} · {{ isProduction ? local('生产环境', 'Production') : '' }}</div></div>
+      <p class="hint-text">{{ local('仅执行预览中的范围；五分钟内有效，目标变化后需重新预览。', 'Execution is bound to this preview for five minutes; changed targets require a new preview.') }}</p>
+      <div class="automation-scroll"><JsonTree :value="pendingPreview?.preview" :initial-expanded-depth="2" /></div>
+      <div class="dlg-footer"><button class="btn btn-outline" @click="settleMutation(false)">{{ t('cancel') }}</button><button class="btn btn-danger" @click="settleMutation(true)">{{ local('确认执行', 'Confirm execution') }}</button></div>
+    </Dialog>
+    <ResourceDetails v-model:open="resourceDetailsOpen" :connection-id="connectionId" :kind="resourceDetailsKind" :resource-id="resourceDetailsId" :read-only="isReadOnly" @changed="loadResource(resource)" />
     <Dialog :open="createContainerOpen" content-class="dlg-wide" @update:open="createContainerOpen = $event">
       <div class="dlg-header">
         <div class="dlg-title">{{ t('createContainer') }}</div>

@@ -17,10 +17,11 @@ import (
 
 // dockerClient 包装一条到 Docker Engine 的连接及其配置。
 type dockerClient struct {
-	cli    *client.Client
-	conn   connectionPayload
-	cfg    pluginConfig
-	closer func() // 关闭 nc-over-ssh 等拨号器持有的资源
+	cli     *client.Client
+	conn    connectionPayload
+	cfg     pluginConfig
+	closer  func() // 关闭 nc-over-ssh 等拨号器持有的资源
+	runtime runtimeEndpoint
 }
 
 func (d *dockerClient) close() {
@@ -56,17 +57,39 @@ func hasEnabledTunnel(c connectionPayload) bool {
 	return false
 }
 
-// validate 复刻分支 config.rs 的安全约束。
+// validateConfig 在拨号前校验逻辑目标和宿主提供的实际端点。
 func validateConfig(c connectionPayload, cfg pluginConfig, runtime runtimeEndpoint) error {
 	switch cfg.Protocol {
+	case "npipe":
+		if !namedPipeSupported() {
+			return errors.New("Docker Named Pipe connections are only supported on Windows")
+		}
+		if hasEnabledTunnel(c) {
+			return errors.New("Named Pipe connections cannot use Tunnel / Proxy")
+		}
+		if !strings.HasPrefix(cfg.PipePath, "//./pipe/") || len(cfg.PipePath) <= len("//./pipe/") || strings.ContainsAny(strings.TrimPrefix(cfg.PipePath, "//./pipe/"), "/\\\x00\r\n") {
+			return errors.New("Named Pipe path must be //./pipe/<name>")
+		}
 	case "http", "https":
-		if strings.TrimSpace(c.Host) == "" && runtime.Port == 0 {
+		if strings.TrimSpace(c.Host) == "" {
 			return errors.New("Docker HTTP/HTTPS connections require a host")
+		}
+		if c.Port < 0 || c.Port > 65535 {
+			return errors.New("Docker port must be between 1 and 65535")
+		}
+		// 有隧道时缺少 runtime 不能回退直连；部分端点也不能静默忽略。
+		if hasEnabledTunnel(c) || runtime.Host != "" || runtime.Port != 0 {
+			if strings.TrimSpace(runtime.Host) == "" || runtime.Port < 1 || runtime.Port > 65535 {
+				return errors.New("DBX did not provide a valid runtime endpoint. Check Tunnel / Proxy settings and reconnect; direct fallback is disabled")
+			}
 		}
 		if cfg.Protocol == "http" && !isLoopbackHost(c.Host) && !hasEnabledTunnel(c) && !cfg.AllowInsecureRemoteHTTP {
 			return errors.New("Remote Docker HTTP is disabled. Enable insecure remote HTTP explicitly, or use HTTPS or an SSH tunnel.")
 		}
 	case "unix", "unix-over-nc", "unix-over-nc-sudo":
+		if hasEnabledTunnel(c) {
+			return errors.New("Socket connections cannot use DBX TCP transport layers. Clear Tunnel / Proxy for this connection, or select HTTP/HTTPS to use a DBX tunnel")
+		}
 		if !strings.HasPrefix(cfg.SocketPath, "/") || strings.ContainsAny(cfg.SocketPath, "\x00\n\r") {
 			return fmt.Errorf("Invalid Docker socket path: %q", cfg.SocketPath)
 		}
@@ -75,6 +98,12 @@ func validateConfig(c connectionPayload, cfg pluginConfig, runtime runtimeEndpoi
 		} else {
 			if strings.TrimSpace(cfg.SSHHost) == "" {
 				return errors.New("Unix-over-NC requires an SSH host (see the connection form)")
+			}
+			if strings.TrimSpace(cfg.SSHUsername) == "" {
+				return errors.New("SSH connections require a username")
+			}
+			if cfg.SSHPort < 1 || cfg.SSHPort > 65535 {
+				return errors.New("SSH port must be between 1 and 65535")
 			}
 		}
 	default:
@@ -139,11 +168,13 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 	var tlsCfg *tls.Config
 
 	switch cfg.Protocol {
+	case "npipe":
+		opts = append(opts, client.WithHost("npipe://"+cfg.PipePath))
 	case "http", "https":
 		host := strings.TrimSpace(c.Host)
 		port := c.Port
 		// dbx 隧道激活时拨本地回环端点，HTTP Host/TLS SNI 保持原始主机。
-		if hasEnabledTunnel(c) && runtime.Host != "" && runtime.Port > 0 {
+		if runtime.Host != "" && runtime.Port > 0 {
 			dialTarget := net.JoinHostPort(runtime.Host, fmt.Sprintf("%d", runtime.Port))
 			dialer := &net.Dialer{Timeout: 15 * time.Second}
 			dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -208,14 +239,32 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 		return nil, err
 	}
 
-	dc := &dockerClient{cli: cli, conn: c, cfg: cfg, closer: closer}
+	dc := &dockerClient{cli: cli, conn: c, cfg: cfg, closer: closer, runtime: runtime}
 
 	// 分支行为：连接建立即 ping 验证。
 	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := cli.Ping(pingCtx); err != nil {
 		dc.close()
+		// 隧道场景下的 reset/EOF 几乎总是「远端拒绝 TCP 转发」：DBX 的隧道在
+		// direct-tcpip 被 sshd 以 Administratively prohibited 拒绝后立刻关闭本地
+		// 监听上的连接，客户端只能看到连接被重置，得不到任何 Docker 响应。
+		// 典型触发条件是 NAS 出厂 sshd 配置里的 AllowTcpForwarding no。
+		if (cfg.Protocol == "http" || cfg.Protocol == "https") && hasEnabledTunnel(c) && isTunnelReset(err) {
+			return nil, fmt.Errorf("Failed to reach Docker daemon: %w. The DBX SSH tunnel was closed before the daemon could answer; the remote sshd most likely refuses TCP forwarding (AllowTcpForwarding no, common on NAS systems). Enable exec-channel proxying for the SSH hop in DBX, or switch this connection to the \"Unix socket over SSH\" protocol", err)
+		}
 		return nil, fmt.Errorf("Failed to reach Docker daemon: %w", err)
 	}
 	return dc, nil
+}
+
+// isTunnelReset 判断错误是否为「隧道本地端点把连接重置」。
+func isTunnelReset(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"forcibly closed", "connection reset", "broken pipe", "eof"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }

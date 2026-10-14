@@ -11,7 +11,7 @@ import (
 )
 
 func (p *plugin) listVolumes(sess *session) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 20*time.Second)
 	defer cancel()
 	resp, err := sess.client.cli.VolumeList(ctx, volume.ListOptions{})
 	if err != nil {
@@ -51,9 +51,9 @@ func (p *plugin) createVolume(sess *session, raw json.RawMessage) (any, error) {
 	if _, err := validateResourceName(driver, "volume driver"); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	created, err := sess.client.cli.VolumeCreate(ctx, volume.CreateOptions{
 		Name:       name,
@@ -74,7 +74,7 @@ func (p *plugin) createVolume(sess *session, raw json.RawMessage) (any, error) {
 }
 
 func (p *plugin) listNetworks(sess *session) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 20*time.Second)
 	defer cancel()
 	items, err := sess.client.cli.NetworkList(ctx, network.ListOptions{})
 	if err != nil {
@@ -128,9 +128,9 @@ func (p *plugin) createNetwork(sess *session, raw json.RawMessage) (any, error) 
 		}
 	}
 
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	resp, err := sess.client.cli.NetworkCreate(ctx, name, opts)
 	if err != nil {

@@ -13,7 +13,7 @@
 //   - 容器重命名会在 finally 中还原原名；镜像打标签会在 finally 中撤销该标签。
 //   - prune 会真实删除资源，因此默认跳过，只有设置 SMOKE_ALLOW_PRUNE=1 才执行。
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -248,7 +248,7 @@ try {
     const result = await client.request('plugin/initialize', { host: { protocolVersions: [1] } });
     assert(result.protocolVersion === 1, `unexpected protocolVersion ${result.protocolVersion}`);
     assert(result.plugin?.id === 'io.dbx.docker', `unexpected plugin id ${result.plugin?.id}`);
-    assert(result.plugin?.version === '0.1.4', `unexpected plugin version ${result.plugin?.version}`);
+    assert(result.plugin?.version === JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version, `unexpected plugin version ${result.plugin?.version}`);
     return `${result.plugin.id} ${result.plugin.version}`;
   });
 
@@ -557,7 +557,7 @@ try {
       const result = await client.request('docker/tagImage', {
         connectionId: CONNECTION_ID,
         imageId: tagged.id,
-        repository: 'dbx-smoke-tag',
+        repository: `dbx-smoke-${process.pid}`,
         tag: 'probe',
       });
       assert(result.reference === reference, `unexpected reference ${result.reference}`);

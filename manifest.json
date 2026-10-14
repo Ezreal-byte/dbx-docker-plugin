@@ -2,19 +2,31 @@
   "manifest_version": 1,
   "id": "io.dbx.docker",
   "name": "Docker",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "publisher": "ezreal-byte",
   "description": "Docker Engine workbench: containers, images, volumes, networks, logs, files, monitoring and Compose apply.",
   "icon": "assets/plugin.svg",
-  "permissions": ["host.workbench", "host.binary"],
-  "engines": { "dbx": ">=0.6.14", "host_api": "1" },
+  "permissions": [
+    "host.workbench",
+    "host.binary",
+    "host.ai"
+  ],
+  "engines": {
+    "dbx": ">=0.6.43",
+    "host_api": "1"
+  },
   "entrypoints": {
     "backend": {
       "executable": "bin/dbx-docker-plugin",
       "transport": "stdio-framed",
-      "protocol_versions": [1]
+      "protocol_versions": [
+        1
+      ]
     },
-    "ui": { "root": "ui", "entry": "ui/index.html" }
+    "ui": {
+      "root": "ui",
+      "entry": "ui/index.html"
+    }
   },
   "contributions": [
     {
@@ -24,42 +36,362 @@
       "icon": "assets/plugin.svg",
       "database_type": "docker",
       "fields": [
-        { "key": "display_name", "label": "Connection name", "type": "text", "default": "Docker", "binding": "name" },
         {
-          "key": "protocol", "label": "Protocol", "type": "select", "binding": "config", "default": "http",
+          "key": "display_name",
+          "label": "Connection name",
+          "type": "text",
+          "default": "Docker",
+          "binding": "name"
+        },
+        {
+          "key": "protocol",
+          "label": "Connection method",
+          "type": "select",
+          "binding": "config",
+          "default": "http",
+          "required": true,
           "options": [
-            { "label": "HTTP (TCP)", "value": "http" },
-            { "label": "HTTPS (TCP + TLS)", "value": "https" },
-            { "label": "Unix socket (local)", "value": "unix" },
-            { "label": "Unix socket over SSH (nc)", "value": "unix-over-nc" },
-            { "label": "Unix socket over SSH (sudo nc)", "value": "unix-over-nc-sudo" }
+            {
+              "label": "HTTP (TCP)",
+              "value": "http"
+            },
+            {
+              "label": "HTTPS (TCP + TLS)",
+              "value": "https"
+            },
+            {
+              "label": "Unix socket (local)",
+              "value": "unix"
+            },
+            {
+              "label": "Windows Named Pipe (local)",
+              "value": "npipe"
+            },
+            {
+              "label": "SSH (Unix socket)",
+              "value": "unix-over-nc"
+            },
+            {
+              "label": "SSH (Unix socket, sudo)",
+              "value": "unix-over-nc-sudo"
+            }
           ]
         },
-        { "key": "host", "label": "Host", "type": "text", "binding": "host", "placeholder": "127.0.0.1 (required for HTTP/HTTPS)" },
-        { "key": "port", "label": "Port", "type": "number", "binding": "port", "placeholder": "2375 / 2376" },
-        { "key": "socket_path", "label": "Socket path", "type": "text", "binding": "config", "default": "/var/run/docker.sock" },
-        { "key": "api_version", "label": "API version", "type": "text", "binding": "config", "default": "auto", "placeholder": "auto or 1.44" },
-        { "key": "allow_insecure_remote_http", "label": "Allow insecure remote HTTP", "type": "boolean", "binding": "config", "default": false },
-        { "key": "ca_cert_path", "label": "CA certificate path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/ca.pem" },
-        { "key": "client_cert_path", "label": "Client certificate path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/cert.pem" },
-        { "key": "client_key_path", "label": "Client key path (HTTPS)", "type": "text", "binding": "config", "placeholder": "C:/certs/key.pem" },
-        { "key": "ssh_host", "label": "SSH host (nc mode)", "type": "text", "binding": "config", "placeholder": "server.example.com" },
-        { "key": "ssh_port", "label": "SSH port", "type": "number", "binding": "config", "default": 22 },
-        { "key": "ssh_username", "label": "SSH username", "type": "text", "binding": "config" },
-        { "key": "ssh_password", "label": "SSH password", "type": "password", "binding": "secret" },
-        { "key": "ssh_private_key_path", "label": "SSH private key path", "type": "text", "binding": "config", "placeholder": "C:/Users/you/.ssh/id_rsa" },
-        { "key": "ssh_known_hosts_path", "label": "SSH known_hosts path", "type": "text", "binding": "config", "placeholder": "Defaults to ~/.ssh/known_hosts" },
-        { "key": "read_only", "label": "Read-only mode", "type": "boolean", "binding": "config", "default": false },
-        { "key": "is_production", "label": "Production environment", "type": "boolean", "binding": "config", "default": false }
+        {
+          "key": "host",
+          "label": "Docker host",
+          "type": "text",
+          "binding": "host",
+          "default": "127.0.0.1",
+          "description": "For an SSH tunnel, enter the Docker address reachable from the remote host, then configure Tunnel / Proxy.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "http",
+              "https"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "http",
+              "https"
+            ]
+          }
+        },
+        {
+          "key": "port",
+          "label": "Docker port",
+          "type": "number",
+          "binding": "port",
+          "default": 2375,
+          "description": "HTTP usually uses 2375; set 2376 for HTTPS.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "http",
+              "https"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "http",
+              "https"
+            ]
+          }
+        },
+        {
+          "key": "allow_insecure_remote_http",
+          "label": "Allow insecure remote HTTP",
+          "type": "boolean",
+          "binding": "config",
+          "default": false,
+          "description": "Not needed for localhost or a DBX SSH tunnel.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "http"
+            ]
+          }
+        },
+        {
+          "key": "ca_cert_path",
+          "label": "CA certificate",
+          "type": "text",
+          "binding": "config",
+          "picker": {
+            "kind": "file",
+            "accept": [
+              ".pem",
+              ".crt"
+            ]
+          },
+          "description": "Optional; leave empty to use the system trust store.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "https"
+            ]
+          }
+        },
+        {
+          "key": "client_cert_path",
+          "label": "Client certificate",
+          "type": "text",
+          "binding": "config",
+          "picker": {
+            "kind": "file",
+            "accept": [
+              ".pem",
+              ".crt"
+            ]
+          },
+          "description": "For mutual TLS; provide both the certificate and private key.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "https"
+            ]
+          }
+        },
+        {
+          "key": "client_key_path",
+          "label": "Client private key",
+          "type": "text",
+          "binding": "config",
+          "picker": {
+            "kind": "file",
+            "accept": [
+              ".pem",
+              ".key"
+            ]
+          },
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "https"
+            ]
+          }
+        },
+        {
+          "key": "ssh_host",
+          "label": "SSH host",
+          "type": "text",
+          "binding": "config",
+          "placeholder": "server.example.com",
+          "description": "Connects directly over SSH. Leave Tunnel / Proxy empty for this method.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "ssh_port",
+          "label": "SSH port",
+          "type": "number",
+          "binding": "config",
+          "default": 22,
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "ssh_username",
+          "label": "SSH username",
+          "type": "text",
+          "binding": "config",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "ssh_private_key_path",
+          "label": "SSH private key",
+          "type": "text",
+          "binding": "config",
+          "picker": {
+            "kind": "file"
+          },
+          "description": "Optional when using password authentication.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "ssh_password",
+          "label": "SSH password / key passphrase",
+          "type": "password",
+          "binding": "secret",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "ssh_known_hosts_path",
+          "label": "Trusted host keys",
+          "type": "text",
+          "binding": "config",
+          "picker": {
+            "kind": "file"
+          },
+          "placeholder": "Defaults to ~/.ssh/known_hosts",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "socket_path",
+          "label": "Socket path",
+          "type": "text",
+          "binding": "config",
+          "default": "/var/run/docker.sock",
+          "description": "With SSH, this is the path on the remote host; otherwise it is a local Unix socket.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix",
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "unix",
+              "unix-over-nc",
+              "unix-over-nc-sudo"
+            ]
+          }
+        },
+        {
+          "key": "pipe_path",
+          "label": "Named Pipe path",
+          "type": "text",
+          "binding": "config",
+          "default": "//./pipe/docker_engine",
+          "description": "Windows only. Docker Desktop local pipe; no TCP port is required.",
+          "visible_when": {
+            "field": "protocol",
+            "one_of": [
+              "npipe"
+            ]
+          },
+          "required_when": {
+            "field": "protocol",
+            "one_of": [
+              "npipe"
+            ]
+          }
+        },
+        {
+          "key": "api_version",
+          "label": "API version",
+          "type": "text",
+          "binding": "config",
+          "default": "auto",
+          "placeholder": "auto or 1.44"
+        },
+        {
+          "key": "read_only",
+          "label": "Read-only mode",
+          "type": "boolean",
+          "binding": "config",
+          "default": false
+        },
+        {
+          "key": "is_production",
+          "label": "Production environment",
+          "type": "boolean",
+          "binding": "config",
+          "default": false
+        }
       ],
       "workbench": "io.dbx.docker.workbench",
-      "capabilities": ["test", "connect", "disconnect"]
+      "capabilities": [
+        "test",
+        "connect",
+        "disconnect"
+      ]
     },
     {
       "type": "workbench",
       "id": "io.dbx.docker.workbench",
       "label": "Docker workbench",
-      "icon": "assets/plugin.svg"
+      "icon": "assets/plugin.svg",
+      "ai": {
+        "recommendations": [
+          {
+            "id": "docker-health",
+            "label": "Docker health overview",
+            "prompt": "Inspect containers, networks and volume references for the current Docker connection. Use query tools only.",
+            "order": 10
+          }
+        ]
+      }
+    },
+    {
+      "type": "mcp",
+      "id": "io.dbx.docker.mcp",
+      "ai_tools": true,
+      "external_tools": true
     }
   ],
   "localizations": {
@@ -70,36 +402,87 @@
         "io.dbx.docker.connection": {
           "label": "Docker",
           "fields": {
-            "display_name": { "label": "连接名称" },
+            "display_name": {
+              "label": "连接名称"
+            },
             "protocol": {
-              "label": "协议",
+              "label": "连接方式",
               "options": {
                 "http": "HTTP (TCP)",
                 "https": "HTTPS (TCP + TLS)",
                 "unix": "Unix Socket（本机）",
-                "unix-over-nc": "Unix Socket over SSH (nc)",
-                "unix-over-nc-sudo": "Unix Socket over SSH (sudo nc)"
+                "unix-over-nc": "SSH（Unix Socket）",
+                "unix-over-nc-sudo": "SSH（Unix Socket，sudo）",
+                "npipe": "Windows 命名管道（本机）"
               }
             },
-            "host": { "label": "主机", "placeholder": "127.0.0.1（HTTP/HTTPS 必填）" },
-            "port": { "label": "端口" },
-            "socket_path": { "label": "Socket 路径" },
-            "api_version": { "label": "API 版本", "placeholder": "auto 或 1.44" },
-            "allow_insecure_remote_http": { "label": "允许不安全的远程 HTTP" },
-            "ca_cert_path": { "label": "CA 证书路径 (HTTPS)" },
-            "client_cert_path": { "label": "客户端证书路径 (HTTPS)" },
-            "client_key_path": { "label": "客户端私钥路径 (HTTPS)" },
-            "ssh_host": { "label": "SSH 主机 (nc 模式)" },
-            "ssh_port": { "label": "SSH 端口" },
-            "ssh_username": { "label": "SSH 用户名" },
-            "ssh_password": { "label": "SSH 密码" },
-            "ssh_private_key_path": { "label": "SSH 私钥路径" },
-            "ssh_known_hosts_path": { "label": "SSH known_hosts 路径", "placeholder": "默认 ~/.ssh/known_hosts" },
-            "read_only": { "label": "只读模式" },
-            "is_production": { "label": "生产环境" }
+            "host": {
+              "label": "Docker 主机",
+              "description": "使用 SSH 隧道时，填写远端可访问的 Docker 地址，再配置“隧道/代理”页。"
+            },
+            "port": {
+              "label": "Docker 端口",
+              "description": "HTTP 通常为 2375；HTTPS 请改为 2376。"
+            },
+            "socket_path": {
+              "label": "Socket 路径",
+              "description": "SSH 方式填写远端路径；本机方式填写本地 Unix Socket 路径。"
+            },
+            "api_version": {
+              "label": "API 版本",
+              "placeholder": "auto 或 1.44"
+            },
+            "allow_insecure_remote_http": {
+              "label": "允许不安全的远程 HTTP",
+              "description": "连接本机或使用 DBX SSH 隧道时，无需开启。"
+            },
+            "ca_cert_path": {
+              "label": "CA 证书",
+              "description": "可选；留空时使用系统信任的证书。"
+            },
+            "client_cert_path": {
+              "label": "客户端证书",
+              "description": "双向 TLS 使用；证书和私钥需同时填写。"
+            },
+            "client_key_path": {
+              "label": "客户端私钥"
+            },
+            "ssh_host": {
+              "label": "SSH 主机",
+              "description": "由插件直接连接 SSH，此方式请将“隧道/代理”页留空。"
+            },
+            "ssh_port": {
+              "label": "SSH 端口"
+            },
+            "ssh_username": {
+              "label": "SSH 用户名"
+            },
+            "ssh_password": {
+              "label": "SSH 密码 / 私钥口令"
+            },
+            "ssh_private_key_path": {
+              "label": "SSH 私钥",
+              "description": "密码登录时可留空。"
+            },
+            "ssh_known_hosts_path": {
+              "label": "可信主机密钥文件",
+              "placeholder": "默认 ~/.ssh/known_hosts"
+            },
+            "read_only": {
+              "label": "只读模式"
+            },
+            "is_production": {
+              "label": "生产环境"
+            },
+            "pipe_path": {
+              "label": "命名管道路径",
+              "description": "仅 Windows：Docker Desktop 本地管道，无需开放 TCP 端口。"
+            }
           }
         },
-        "io.dbx.docker.workbench": { "label": "Docker 工作台" }
+        "io.dbx.docker.workbench": {
+          "label": "Docker 工作台"
+        }
       }
     }
   }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -49,8 +50,8 @@ func (p *plugin) applyCompose(sess *session, raw json.RawMessage) (any, error) {
 	if err := p.ensureWritable(sess, "applying Compose projects"); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
 
 	plan, err := buildComposePlan(in.Request)
 	if err != nil {
@@ -76,6 +77,36 @@ func buildComposePlan(req DockerComposeApplyRequest) (*composePlan, error) {
 	var doc map[string]any
 	if err := yaml.Unmarshal([]byte(req.Content), &doc); err != nil {
 		return nil, fmt.Errorf("Failed to parse Compose YAML: %v", err)
+	}
+	if len(req.Content) > 128*1024 {
+		return nil, errors.New("Compose content exceeds 128 KiB")
+	}
+	if strings.Contains(req.Content, "${") {
+		return nil, errors.New("Compose variable interpolation is not supported in this version")
+	}
+	for key, value := range doc {
+		switch key {
+		case "services", "version":
+		case "networks", "volumes":
+			if value == nil {
+				continue
+			}
+			declared, ok := value.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("Compose %s must be a mapping", key)
+			}
+			for name, config := range declared {
+				if config == nil {
+					continue
+				}
+				m, ok := config.(map[string]any)
+				if !ok || len(m) > 0 {
+					return nil, fmt.Errorf("Compose %s.%s configuration is not supported; only empty resource declarations are supported", key, name)
+				}
+			}
+		default:
+			return nil, fmt.Errorf("Unsupported Compose field: %s", key)
+		}
 	}
 	servicesRaw, ok := doc["services"].(map[string]any)
 	if !ok || len(servicesRaw) == 0 {
@@ -173,11 +204,34 @@ func planComposeService(project, serviceName string, body map[string]any) (*comp
 	if body == nil {
 		return nil, "", fmt.Errorf("Service %s must be a mapping", serviceName)
 	}
-
 	image, _ := scalarString(body["image"])
 	image = strings.TrimSpace(image)
 	if image == "" {
 		return nil, "", fmt.Errorf("Service %s image is required", serviceName)
+	}
+
+	for key := range body {
+		switch key {
+		case "image", "container_name", "command", "environment", "ports", "volumes", "networks", "restart", "labels":
+		default:
+			return nil, "", fmt.Errorf("Service %s has unsupported field: %s", serviceName, key)
+		}
+	}
+	if a, ok := body["networks"].([]any); ok && len(a) > 1 {
+		return nil, "", fmt.Errorf("Service %s: multiple networks require a later Compose version", serviceName)
+	}
+	if m, ok := body["networks"].(map[string]any); ok {
+		if len(m) > 1 {
+			return nil, "", fmt.Errorf("Service %s: multiple networks are not supported", serviceName)
+		}
+		for _, v := range m {
+			if v != nil {
+				options, ok := v.(map[string]any)
+				if !ok || len(options) > 0 {
+					return nil, "", fmt.Errorf("Service %s: network aliases and static addresses are not supported", serviceName)
+				}
+			}
+		}
 	}
 
 	containerName, _ := scalarString(body["container_name"])
@@ -402,7 +456,7 @@ type containerBackup struct {
 
 func (p *plugin) applyComposePlan(sess *session, plan *composePlan, replaceExisting bool) (any, error) {
 	cli := sess.client.cli
-	ctx := context.Background()
+	ctx := sess.context()
 
 	allContainers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
@@ -428,6 +482,23 @@ func (p *plugin) applyComposePlan(sess *session, plan *composePlan, replaceExist
 	if len(existingProject) > 0 && !replaceExisting {
 		return nil, fmt.Errorf("Compose project %s already exists; enable replacement to update it", plan.Project)
 	}
+	if sess.mutationScope != nil {
+		var approved struct{ Containers []struct{ ID string } }
+		_ = json.Unmarshal(jsonBytes(sess.mutationScope), &approved)
+		expected := []string{}
+		actual := []string{}
+		for _, c := range approved.Containers {
+			expected = append(expected, c.ID)
+		}
+		for _, c := range existingProject {
+			actual = append(actual, c.ID)
+		}
+		sort.Strings(expected)
+		sort.Strings(actual)
+		if hashValue(expected) != hashValue(actual) {
+			return nil, errors.New("Compose project changed after preview; preview again")
+		}
+	}
 
 	var backups []containerBackup
 	var createdNetworks []string
@@ -436,6 +507,8 @@ func (p *plugin) applyComposePlan(sess *session, plan *composePlan, replaceExist
 	var warnings []string
 
 	rollback := func(cause error) error {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+		defer cancel()
 		var rollbackErrs []string
 		// 倒序 stop+remove 新容器
 		for i := len(createdContainers) - 1; i >= 0; i-- {

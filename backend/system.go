@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 // 对齐 `docker system df`：镜像层、容器可写层、卷、构建缓存各自的占用与可回收空间。
 
 func (p *plugin) getDiskUsage(sess *session) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 
 	usage, err := sess.client.cli.DiskUsage(ctx, dockertypes.DiskUsageOptions{})
@@ -111,7 +110,7 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 		return nil, errInvalidParams
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	cli := sess.client.cli
 
@@ -129,7 +128,7 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 			}
 			name := strings.TrimPrefix(firstOrEmpty(item.Names), "/")
 			preview.Items = append(preview.Items, DockerPruneCandidate{
-				ID:     shortContainerID(item.ID),
+				ID:     item.ID,
 				Name:   name,
 				Detail: item.Status,
 				Size:   item.SizeRw,
@@ -138,7 +137,10 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 		preview.Warning = "Only stopped containers are removed; running and paused containers are kept."
 
 	case "images":
-		args := filters.NewArgs(filters.Arg("dangling", strconv.FormatBool(!in.All)))
+		args := filters.NewArgs()
+		if !in.All {
+			args.Add("dangling", "true")
+		}
 		items, err := cli.ImageList(ctx, image.ListOptions{All: in.All, Filters: args})
 		if err != nil {
 			return nil, err
@@ -152,7 +154,7 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 				continue
 			}
 			preview.Items = append(preview.Items, DockerPruneCandidate{
-				ID:     shortImageID(item.ID),
+				ID:     item.ID,
 				Name:   firstOrEmpty(item.RepoTags),
 				Detail: strings.Join(nonNilStrings(item.RepoTags), ", "),
 				Size:   item.Size,
@@ -179,8 +181,8 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 				continue
 			}
 			// 与 docker volume prune 的默认行为对齐：不加 --all 时只删匿名卷
-			// （用「没有标签」作为匿名卷的判据，和 daemon 的过滤条件一致）。
-			if !in.All && len(item.Labels) > 0 {
+			// 使用 Docker 的匿名卷标签；没有标签不代表是匿名卷。
+			if _, anonymous := item.Labels["com.docker.volume.anonymous"]; !in.All && !anonymous {
 				continue
 			}
 			var size int64
@@ -206,8 +208,11 @@ func (p *plugin) prunePreview(sess *session, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		for _, item := range items {
+			if protectedNetwork(item.Name, item.Driver) || len(item.Containers) > 0 {
+				continue
+			}
 			preview.Items = append(preview.Items, DockerPruneCandidate{
-				ID:     item.ID[:min(len(item.ID), 12)],
+				ID:     item.ID,
 				Name:   item.Name,
 				Detail: item.Driver,
 			})
@@ -290,9 +295,9 @@ func (p *plugin) prune(sess *session, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 180*time.Second)
 	defer cancel()
 	cli := sess.client.cli
 
@@ -363,9 +368,9 @@ func (p *plugin) renameContainer(sess *session, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	if err := sess.client.cli.ContainerRename(ctx, in.ContainerID, name); err != nil {
 		return nil, err
@@ -403,9 +408,9 @@ func (p *plugin) tagImage(sess *session, raw json.RawMessage) (any, error) {
 	}
 	reference := repository + ":" + tag
 
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	if err := sess.client.cli.ImageTag(ctx, in.ImageID, reference); err != nil {
 		return nil, err
@@ -432,9 +437,9 @@ func (p *plugin) untagImage(sess *session, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("Invalid image reference: %q", reference)
 	}
 
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	if _, err := sess.client.cli.ImageRemove(ctx, reference, image.RemoveOptions{}); err != nil {
 		return nil, err
@@ -451,7 +456,7 @@ func (p *plugin) imageHistory(sess *session, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &in); err != nil || in.ImageID == "" {
 		return nil, errors.New("imageHistory requires imageId")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	items, err := sess.client.cli.ImageHistory(ctx, in.ImageID)
 	if err != nil {

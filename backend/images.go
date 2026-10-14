@@ -15,7 +15,7 @@ import (
 )
 
 func (p *plugin) listImages(sess *session) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 30*time.Second)
 	defer cancel()
 	items, err := sess.client.cli.ImageList(ctx, image.ListOptions{All: false})
 	if err != nil {
@@ -53,7 +53,7 @@ func (p *plugin) pullImage(sess *session, raw json.RawMessage, emitter *sdk.Emit
 	if err := p.ensureWritable(sess, "pulling images"); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(sess.context())
 	p.streams.add(&streamSession{sessionID: in.SessionID, connectionID: sess.conn.ID, kind: "pull", cancel: cancel})
 
 	go func() {
@@ -61,24 +61,14 @@ func (p *plugin) pullImage(sess *session, raw json.RawMessage, emitter *sdk.Emit
 		header := transferHeader{SessionID: in.SessionID, Kind: "pull", Direction: "download", Image: in.Image, Status: "running"}
 		emitFrame(emitter, channelTransfer, frameKindJSON, header, nil)
 
-		opts := image.PullOptions{}
-		if encoded := encodeRegistryAuth(in.Auth); encoded != "" {
-			opts.RegistryAuth = encoded
-		}
-		reader, err := sess.client.cli.ImagePull(ctx, in.Image, opts)
-		if err != nil {
-			header.Status, header.Error = "error", err.Error()
-			emitFrame(emitter, channelTransfer, frameKindJSON, header, nil)
-			return
-		}
-		defer reader.Close()
-		status := streamJSONLines(ctx, reader, func(chunk []byte) {
-			emitFrame(emitter, channelTransfer, frameKindData, transferHeader{
-				SessionID: in.SessionID, Kind: "pull", Direction: "download", Image: in.Image,
-				Status: "running", DataLen: len(chunk),
-			}, chunk)
+		err := runImagePull(ctx, sess.client.cli, in.Image, in.Auth, func(chunk []byte) {
+			emitFrame(emitter, channelTransfer, frameKindData, transferHeader{SessionID: in.SessionID, Kind: "pull", Direction: "download", Image: in.Image, Status: "running", DataLen: len(chunk)}, chunk)
 		})
-		header.Status = status
+		header.Status = "done"
+		if err != nil {
+			header.Status = "error"
+			header.Error = err.Error()
+		}
 		if ctx.Err() != nil {
 			header.Status = "cancelled"
 		}
@@ -111,7 +101,7 @@ func (p *plugin) pushImage(sess *session, raw json.RawMessage, emitter *sdk.Emit
 		return nil, fmt.Errorf("Invalid push target reference: %s", in.TargetReference)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(sess.context())
 	p.streams.add(&streamSession{sessionID: in.SessionID, connectionID: sess.conn.ID, kind: "push", cancel: cancel})
 
 	go func() {
@@ -172,7 +162,7 @@ func (p *plugin) exportImage(sess *session, raw json.RawMessage, emitter *sdk.Em
 		return nil, errors.New("exportImage requires sessionId")
 	}
 	// 分支明确 export 不受 read_only 约束。
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(sess.context())
 	p.streams.add(&streamSession{sessionID: in.SessionID, connectionID: sess.conn.ID, kind: "export", cancel: cancel})
 
 	go func() {
@@ -231,11 +221,24 @@ func (p *plugin) removeImage(sess *session, raw json.RawMessage) (any, error) {
 	if err := p.ensureWritable(sess, "removing images"); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	cli := sess.client.cli
+
+	detail, _, err := cli.ImageInspectWithRaw(ctx, in.ImageID)
+	if err != nil {
+		return nil, err
+	}
+	used, err := usedImageIDs(ctx, cli)
+	if err != nil {
+		return nil, err
+	}
+	if used[detail.ID] {
+		return nil, errors.New("Image is referenced by a container (including stopped containers)")
+	}
+	in.ImageID = detail.ID
 
 	// 复刻分支：列出镜像找到该 id 的 tags，按 tag 逐个删；无 tag 直接按 id 删。
 	items, err := cli.ImageList(ctx, image.ListOptions{All: false})

@@ -34,7 +34,7 @@ func fetchConnectionInfo(ctx context.Context, cli dockerAPI) (DockerConnectionIn
 }
 
 func (p *plugin) getEngineDetails(sess *session) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 20*time.Second)
 	defer cancel()
 	cli := sess.client.cli
 
@@ -103,7 +103,7 @@ func (p *plugin) listContainers(sess *session, raw json.RawMessage) (any, error)
 		All bool `json:"all"`
 	}
 	_ = json.Unmarshal(raw, &in)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 20*time.Second)
 	defer cancel()
 	items, err := sess.client.cli.ContainerList(ctx, container.ListOptions{All: in.All})
 	if err != nil {
@@ -156,9 +156,9 @@ func (p *plugin) containerAction(sess *session, raw json.RawMessage) (any, error
 	if err := p.ensureWritable(sess, "lifecycle operations"); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 120*time.Second)
 	defer cancel()
 	cli := sess.client.cli
 	var err error
@@ -189,7 +189,7 @@ func (p *plugin) inspectContainer(sess *session, raw json.RawMessage) (any, erro
 	if err := json.Unmarshal(raw, &in); err != nil || in.ContainerID == "" {
 		return nil, errors.New("inspectContainer requires containerId")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(sess.context(), 20*time.Second)
 	defer cancel()
 	_, rawJSON, err := sess.client.cli.ContainerInspectWithRaw(ctx, in.ContainerID, false)
 	if err != nil {
@@ -464,9 +464,9 @@ func (p *plugin) createContainer(sess *session, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	resp, err := sess.client.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, name)
 	if err != nil {
@@ -493,9 +493,9 @@ func (p *plugin) removeContainer(sess *session, raw json.RawMessage) (any, error
 	if err := p.ensureWritable(sess, "removing containers"); err != nil {
 		return nil, err
 	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	sess.writeMutex().Lock()
+	defer sess.writeMutex().Unlock()
+	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	if err := sess.client.cli.ContainerRemove(ctx, in.ContainerID, container.RemoveOptions{Force: false, RemoveVolumes: false}); err != nil {
 		return nil, err
