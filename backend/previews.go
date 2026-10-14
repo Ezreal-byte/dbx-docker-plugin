@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/errdefs"
 )
 
 // Snapshots exclude clocks and counters which change without changing the
@@ -18,6 +19,31 @@ func (p *plugin) mutationSnapshot(sess *session, t toolDefinition, args map[stri
 	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	switch t.Name {
+	case "delete_file", "upload_file":
+		return fileMutationSnapshot(sess, t.Name, args)
+	case "untag_image":
+		return p.resourceOperation("docker/inspectImage", sess, jsonBytes(map[string]any{"imageId": args["reference"]}))
+	case "tag_image":
+		source, _, err := sess.client.cli.ImageInspectWithRaw(ctx, args["imageId"].(string))
+		if err != nil {
+			return nil, err
+		}
+		reference := args["repository"].(string) + ":" + args["tag"].(string)
+		target, _, err := sess.client.cli.ImageInspectWithRaw(ctx, reference)
+		if err != nil && !errdefs.IsNotFound(err) {
+			return nil, err
+		}
+		return map[string]any{"sourceId": source.ID, "reference": reference, "previousImageId": target.ID, "replacesTag": target.ID != "" && target.ID != source.ID}, nil
+	case "disconnect_network":
+		n, err := sess.client.cli.NetworkInspect(ctx, args["networkId"].(string), network.InspectOptions{})
+		if err != nil {
+			return nil, err
+		}
+		c, err := sess.client.cli.ContainerInspect(ctx, args["containerId"].(string))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"network": n, "containerId": c.ID, "containerName": c.Name}, nil
 	case "remove_container":
 		c, err := sess.client.cli.ContainerInspect(ctx, args["containerId"].(string))
 		if err != nil {
@@ -124,6 +150,16 @@ func (p *plugin) prepareMutation(sess *session, t toolDefinition, args map[strin
 	if len(jsonBytes(display)) > 160*1024 {
 		return nil, errors.New("Preview is too large; select fewer resources")
 	}
+	// Multi-query display generation must describe the same state we bind.
+	if t.Name == "apply_compose" || t.Name == "prune_resources" {
+		current, err := p.mutationSnapshot(sess, t, args)
+		if err != nil {
+			return nil, err
+		}
+		if hashValue(current) != hashValue(snapshot) {
+			return nil, errors.New("Target changed while preparing the preview; retry")
+		}
+	}
 	token := randomID()
 	expires := time.Now().UTC().Add(5 * time.Minute)
 	err = p.lockedState(true, func(s *automationState) error {
@@ -172,6 +208,18 @@ func (p *plugin) executeMutation(sess *session, t toolDefinition, args map[strin
 	lock := sess.writeMutex()
 	lock.Lock()
 	defer lock.Unlock()
+	if sess.automated {
+		if err := p.policyAllows(sess.conn.ID, t.Name); err != nil {
+			return nil, err
+		}
+		if t.Name == "apply_compose" {
+			if request, _ := args["request"].(map[string]any); request["replaceExisting"] == true {
+				if err := p.policyAllows(sess.conn.ID, "remove_container"); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	child := &session{client: sess.client, conn: sess.conn, parent: sess, ctx: sess.context(), lockHeld: true}
 	if err := child.context().Err(); err != nil {
 		return nil, err
@@ -203,6 +251,16 @@ func (p *plugin) executeMutation(sess *session, t toolDefinition, args map[strin
 			args["networkId"] = out.ID
 		}
 		child.mutationScope = current
+		if t.Name == "tag_image" {
+			args["imageId"] = current.(map[string]any)["sourceId"]
+		}
+		if t.Name == "delete_file" {
+			args["containerId"] = current.(map[string]any)["containerId"]
+		}
+		if t.Name == "disconnect_network" {
+			args["containerId"] = current.(map[string]any)["containerId"]
+			args["networkId"] = current.(map[string]any)["network"].(network.Inspect).ID
+		}
 	}
 	return p.executeTool(child, t, args)
 }
@@ -256,12 +314,15 @@ func (p *plugin) mutationRPC(sess *session, raw json.RawMessage) (any, error) {
 	if json.Unmarshal(raw, &in) != nil {
 		return nil, errInvalidParams
 	}
-	t, ok := findTool(in.Operation)
+	t, ok := findMutation(in.Operation)
 	if !ok || !t.Destructive {
 		return nil, errors.New("Unknown preview operation")
 	}
 	if err := validateValue(t.InputSchema, in.Arguments, "arguments"); err != nil {
 		return nil, err
+	}
+	if in.Operation == "upload_file" && in.Arguments["previewToken"] != nil {
+		return nil, errors.New("Execute an upload through docker/startFileUpload with its previewToken")
 	}
 	return p.runTool(sess, t, in.Arguments, false)
 }

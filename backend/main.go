@@ -15,7 +15,7 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.2.3"
+	pluginVersion = "0.3.0"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。
@@ -27,6 +27,7 @@ type session struct {
 	ctx           context.Context
 	lockHeld      bool
 	mutationScope any
+	automated     bool
 }
 
 func (s *session) context() context.Context {
@@ -127,6 +128,9 @@ func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter 
 	if err != nil {
 		return nil, err
 	}
+	if operation := workbenchMutation(method, raw); operation != "" {
+		return p.guardedWorkbenchMutation(sess, operation, raw)
+	}
 	return p.dispatchSession(method, sess, raw, emitter)
 }
 
@@ -222,6 +226,13 @@ func (p *plugin) sessionFor(connectionID string, conn connectionPayload, rt runt
 	sess, ok := p.sessions[connectionID]
 	p.mu.RUnlock()
 	if ok {
+		if conn.ID != "" {
+			if conn.ID != connectionID || !sameConnection(conn, sess.conn) {
+				return nil, fmt.Errorf("Connection configuration changed; reopen its Docker workbench")
+			}
+			// Use the host's current policy flags, not the cached connection flags.
+			return &session{client: sess.client, conn: conn, parent: sess}, nil
+		}
 		return sess, nil
 	}
 	// 惰性重连：会话缺失且请求自带连接配置时现场建立（分支行为即每请求重建）。
@@ -233,7 +244,10 @@ func (p *plugin) sessionFor(connectionID string, conn connectionPayload, rt runt
 	p.mu.RLock()
 	if sess, ok := p.sessions[connectionID]; ok {
 		p.mu.RUnlock()
-		return sess, nil
+		if conn.ID != connectionID || !sameConnection(conn, sess.conn) {
+			return nil, fmt.Errorf("Connection configuration changed; reopen its Docker workbench")
+		}
+		return &session{client: sess.client, conn: conn, parent: sess}, nil
 	}
 	p.mu.RUnlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

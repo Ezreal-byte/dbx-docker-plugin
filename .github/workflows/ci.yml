@@ -1,0 +1,58 @@
+name: Docker plugin CI
+
+on:
+  push:
+    branches: ['main', 'master', 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: go -C backend test ./...
+      - run: go -C backend/sdk test ./...
+      - run: npm run build
+      - name: Docker mutation safety (disposable container)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          go -C backend build -o ../dist/safety-sidecar .
+          docker pull alpine:3.22
+          node scripts/check-mutation-safety.mjs dist/safety-sidecar alpine:3.22
+      - name: Package Windows candidate
+        if: runner.os == 'Windows'
+        run: npm run package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: runner.os == 'Windows'
+        with:
+          name: docker-windows-${{ github.sha }}
+          path: |
+            dist/*.dbxp
+            dist/*.artifact.json
+          if-no-files-found: error
+          retention-days: 14

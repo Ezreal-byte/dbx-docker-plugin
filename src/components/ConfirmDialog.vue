@@ -1,6 +1,6 @@
 // 危险操作确认对话框（对应分支 DangerConfirmDialog 的用法）。
 <template>
-  <Dialog :open="open" @update:open="emit('update:open', $event)">
+  <Dialog :open="open" elevated @update:open="emit('update:open', $event)">
     <div class="dlg-header">
       <div class="dlg-title">{{ message }}</div>
     </div>

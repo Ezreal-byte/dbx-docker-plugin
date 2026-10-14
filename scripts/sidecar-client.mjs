@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 export class Sidecar {
   constructor(executable, dataDir) {
-    this.seq = 0; this.pending = new Map(); this.buffer = Buffer.alloc(0);
+    this.seq = 0; this.pending = new Map(); this.buffer = Buffer.alloc(0); this.binaryListeners = new Set();
     this.child = spawn(executable, [], { env: { ...process.env, DBX_PLUGIN_DATA_DIR: dataDir }, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.stderr.on('data', chunk => process.stderr.write(chunk));
     this.child.stdout.on('data', chunk => {
@@ -9,11 +9,23 @@ export class Sidecar {
       while (this.buffer.length >= 5) {
         const size = this.buffer.readUInt32BE(1); if (this.buffer.length < 5 + size) return;
         const kind = this.buffer[0], body = this.buffer.subarray(5, 5 + size); this.buffer = this.buffer.subarray(5 + size);
+        if (kind === 1) {
+          const length = body.readUInt16BE(0), channel = body.subarray(2, 2 + length).toString();
+          for (const listener of this.binaryListeners) listener(channel, body.subarray(2 + length));
+          continue;
+        }
         if (kind !== 0) continue;
         const msg = JSON.parse(body); const pending = this.pending.get(msg.id); if (!pending) continue;
         this.pending.delete(msg.id); clearTimeout(pending.timer); msg.error ? pending.reject(Error(msg.error.message)) : pending.resolve(msg.result);
       }
     });
+  }
+  onBinary(listener) { this.binaryListeners.add(listener); return () => this.binaryListeners.delete(listener); }
+  sendBinary(channel, data) {
+    const label = Buffer.from(channel), prefix = Buffer.alloc(2); prefix.writeUInt16BE(label.length);
+    const body = Buffer.concat([prefix, label, data]), header = Buffer.alloc(5);
+    header[0] = 1; header.writeUInt32BE(body.length, 1);
+    this.child.stdin.write(Buffer.concat([header, body]));
   }
   request(method, params = {}) {
     const id = ++this.seq, payload = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, method, params }));

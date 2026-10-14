@@ -239,6 +239,9 @@ func (p *plugin) forwardToDesktop(id, tool string, args map[string]any) (callToo
 }
 
 func (p *plugin) runTool(sess *session, t toolDefinition, args map[string]any, automation bool) (any, error) {
+	if automation {
+		sess = &session{client: sess.client, conn: sess.conn, parent: sess, ctx: sess.context(), automated: true}
+	}
 	if t.Group != "query" {
 		if err := p.ensureWritable(sess, t.Name); err != nil {
 			return nil, err

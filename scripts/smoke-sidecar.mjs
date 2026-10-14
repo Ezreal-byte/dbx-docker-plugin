@@ -11,11 +11,12 @@
 //
 // 对机器状态的改动：
 //   - 容器重命名会在 finally 中还原原名；镜像打标签会在 finally 中撤销该标签。
-//   - prune 会真实删除资源，因此默认跳过，只有设置 SMOKE_ALLOW_PRUNE=1 才执行。
+//   - prune 只检查无令牌拒绝及只读预览，不执行全局清理。
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 function defaultExecutable() {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,6 +39,7 @@ const containerName = process.argv[4] || 'dbx-mon-test';
 const FRAME_JSON = 0;
 const FRAME_BINARY = 1;
 const CONNECTION_ID = 'smoke-connection';
+const smokeDataDir = mkdtempSync(join(tmpdir(), 'dbx-smoke-state-'));
 
 const checks = [];
 let failures = 0;
@@ -76,7 +78,7 @@ class SidecarClient {
     this.buffer = Buffer.alloc(0);
     this.stderr = '';
     this.exit = undefined;
-    this.child = spawn(command, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child = spawn(command, [], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, DBX_PLUGIN_DATA_DIR: smokeDataDir } });
     this.child.stderr.on('data', (chunk) => { this.stderr += chunk.toString(); });
     this.child.on('exit', (code) => { this.exit = code; });
     this.child.stdout.on('data', (chunk) => {
@@ -239,6 +241,10 @@ function connectionPayload(id, overrides = {}) {
 // ---------- 用例 ----------
 
 const client = new SidecarClient(executable);
+async function confirmedMutation(operation, args) {
+  const preview = await client.request('docker/mutation', { connectionId: CONNECTION_ID, operation, arguments: args });
+  return client.request('docker/mutation', { connectionId: CONNECTION_ID, operation, arguments: { ...args, previewToken: preview.previewToken } });
+}
 let container = null;
 
 try {
@@ -440,6 +446,7 @@ try {
 
       const uploadSession = 'smoke-upload';
       const uploadWaiter = waitForExecDone(uploadSession);
+      const uploadPreview = await client.request('docker/mutation', { connectionId: CONNECTION_ID, operation: 'upload_file', arguments: { containerId, path: target, size: payload.length, mode: 'overwrite' } });
       await client.request('docker/startFileUpload', {
         connectionId: CONNECTION_ID,
         containerId,
@@ -447,6 +454,7 @@ try {
         sessionId: uploadSession,
         size: payload.length,
         mode: 'overwrite',
+        previewToken: uploadPreview.previewToken,
       });
       client.sendBinary('docker-exec', encodeExecInput(uploadSession, payload));
       await uploadWaiter.promise;
@@ -552,10 +560,9 @@ try {
     const images = await client.request('docker/listImages', { connectionId: CONNECTION_ID });
     const tagged = images.find((item) => (item.repoTags || []).some((tag) => tag && tag !== '<none>:<none>'));
     assert(tagged, 'no tagged image available for the tag test');
-    const reference = `dbx-smoke-tag:probe`;
+    const reference = `dbx-smoke-${process.pid}:probe`;
     try {
-      const result = await client.request('docker/tagImage', {
-        connectionId: CONNECTION_ID,
+      const result = await confirmedMutation('tag_image', {
         imageId: tagged.id,
         repository: `dbx-smoke-${process.pid}`,
         tag: 'probe',
@@ -567,7 +574,7 @@ try {
       return reference;
     } finally {
       // 无论断言是否通过都摘掉探测标签，保证机器状态干净。
-      await client.request('docker/untagImage', { connectionId: CONNECTION_ID, reference }).catch(() => {});
+      await confirmedMutation('untag_image', { reference }).catch(() => {});
     }
   });
 
@@ -581,18 +588,13 @@ try {
     return `${layers.length} layers`;
   });
 
-  // 清理类用例会真实删除资源，因此默认跳过；需要验证时显式设置 SMOKE_ALLOW_PRUNE=1。
-  if (process.env.SMOKE_ALLOW_PRUNE === '1') {
-    await check('docker/prune (containers)', async () => {
-      const result = await client.request('docker/prune', { connectionId: CONNECTION_ID, target: 'containers', all: false });
-      assert(Array.isArray(result.deleted), 'expected a deleted list');
-      assert(typeof result.spaceReclaimed === 'number', 'missing spaceReclaimed');
-      return `${result.deleted.length} removed`;
-    });
-  } else {
-    console.log('  skip docker/prune (set SMOKE_ALLOW_PRUNE=1 to allow deleting stopped containers)');
-  }
-
+  await check('docker/prune requires a confirmed preview', async () => {
+    let rejected = false;
+    try { await client.request('docker/prune', { connectionId: CONNECTION_ID, target: 'containers', all: false }); }
+    catch (error) { rejected = /confirmed preview/i.test(error.message); }
+    assert(rejected, 'unconfirmed prune was not rejected');
+    return 'no global cleanup executed';
+  });
   if (container) {
     await check('docker/renameContainer round-trip', async () => {
       const renamed = `${containerName}-smoke`;
@@ -655,6 +657,8 @@ try {
   });
 } finally {
   client.close();
+  if (!resolve(smokeDataDir).startsWith(resolve(tmpdir()) + sep + 'dbx-smoke-state-')) throw Error('Unexpected temporary path');
+  rmSync(smokeDataDir, { recursive: true, force: true });
 }
 
 console.log('');

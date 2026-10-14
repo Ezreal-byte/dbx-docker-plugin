@@ -11,6 +11,7 @@ const props = defineProps<{ open: boolean; connectionId: string; kind: string; r
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>();
 const data = ref<any>(), error = ref(''), busy = ref(false), containerId = ref('');
 const containers = ref<DockerContainer[]>([]), preview = ref<MutationPreview>();
+const pendingDisconnect = ref<{ containerId: string; preview: MutationPreview }>();
 const spec = computed(() => ({ images: ['Image', 'imageId', 'remove_image'], networks: ['Network', 'networkId', 'remove_network'], volumes: ['Volume', 'name', 'remove_volume'] }[props.kind] || ['Image', 'imageId', 'remove_image']));
 const args = computed(() => ({ [spec.value[1]]: props.resourceId }));
 const protectedNetwork = computed(() => props.kind === 'networks' && (['bridge', 'host', 'none'].includes(data.value?.Name) || ['host', 'null'].includes(data.value?.Driver)));
@@ -18,22 +19,39 @@ const refs = computed<{ id: string; names: string[]; state: string; destination?
 const endpoints = computed<[string, any][]>(() => Object.entries(data.value?.Containers || {}));
 const inUse = computed(() => refs.value.length > 0 || endpoints.value.length > 0);
 async function load() {
-  busy.value = true; error.value = ''; preview.value = undefined;
+  busy.value = true; error.value = ''; preview.value = undefined; pendingDisconnect.value = undefined;
   try { data.value = await invoke(props.connectionId, `docker/inspect${spec.value[0]}`, args.value); if (props.kind === 'networks') containers.value = await invoke<DockerContainer[]>(props.connectionId, 'docker/listContainers', { all: true }); }
   catch (e) { error.value = String(e); } finally { busy.value = false; }
 }
 async function changeNetwork(connect: boolean) {
+  if (props.readOnly || busy.value || !containerId.value) return;
   busy.value = true; error.value = '';
-  try { await invoke(props.connectionId, `docker/${connect ? 'connect' : 'disconnect'}Network`, { networkId: props.resourceId, containerId: containerId.value }); await load(); emit('changed'); }
+  try {
+    const args = { networkId: props.resourceId, containerId: containerId.value };
+    if (!connect) {
+      const bound = await mutationPreview(props.connectionId, 'disconnect_network', args);
+      pendingDisconnect.value = { containerId: args.containerId, preview: bound }; return;
+    }
+    await invoke(props.connectionId, 'docker/connectNetwork', args); await load(); emit('changed');
+  }
+  catch (e) { error.value = String(e); } finally { busy.value = false; }
+}
+async function confirmDisconnect() {
+  if (!pendingDisconnect.value || props.readOnly || busy.value) return;
+  const pending = pendingDisconnect.value; pendingDisconnect.value = undefined;
+  busy.value = true; error.value = '';
+  try { await mutationExecute(props.connectionId, 'disconnect_network', { networkId: props.resourceId, containerId: pending.containerId }, pending.preview); await load(); emit('changed'); }
   catch (e) { error.value = String(e); } finally { busy.value = false; }
 }
 async function remove() {
+  if (busy.value || props.readOnly || protectedNetwork.value || inUse.value || !data.value) return;
   busy.value = true; error.value = '';
   try { if (!preview.value) preview.value = await mutationPreview(props.connectionId, spec.value[2], args.value);
     else { const bound = preview.value; preview.value = undefined; await mutationExecute(props.connectionId, spec.value[2], args.value, bound); emit('changed'); emit('update:open', false); }
   } catch (e) { preview.value = undefined; error.value = String(e); } finally { busy.value = false; }
 }
 watch(() => [props.open, props.resourceId, props.kind, props.connectionId], () => { data.value = undefined; containerId.value = ''; if (props.open && props.resourceId) void load(); });
+watch(() => [props.open, props.resourceId, props.kind, props.connectionId, containerId.value], () => { pendingDisconnect.value = undefined; });
 </script>
 <template>
   <Dialog :open="open" content-class="dlg-wide automation-dialog" @update:open="emit('update:open', $event)">
@@ -51,6 +69,11 @@ watch(() => [props.open, props.resourceId, props.kind, props.connectionId], () =
         <div class="dlg-footer"><button class="btn btn-outline" :disabled="busy || !containerId" @click="changeNetwork(true)">{{ local('连接到网络', 'Connect') }}</button><button class="btn btn-outline" :disabled="busy || !containerId || !data?.Containers?.[containerId]" @click="changeNetwork(false)">{{ local('断开网络', 'Disconnect') }}</button></div>
       </div>
       <p v-if="protectedNetwork" class="hint-text">{{ local('Docker 内置网络受到保护。', 'Docker built-in networks are protected.') }}</p>
+      <div v-if="pendingDisconnect" class="automation-group">
+        <p class="error-banner">{{ local('断开网络可能中断容器服务，确认执行以下操作？', 'Disconnecting may interrupt the container service. Confirm this operation?') }}</p>
+        <JsonTree :value="pendingDisconnect.preview.preview" :initial-expanded-depth="2" />
+        <div class="dlg-footer"><button class="btn btn-outline" @click="pendingDisconnect = undefined">{{ local('取消', 'Cancel') }}</button><button class="btn btn-danger" :disabled="busy || readOnly" @click="confirmDisconnect">{{ local('确认断开', 'Confirm disconnect') }}</button></div>
+      </div>
       <template v-if="preview"><p class="error-banner">{{ local('确认删除以下资源；数据删除无法撤销。预览五分钟内有效。', 'Confirm deletion below. Data deletion cannot be undone. Preview expires in five minutes.') }} {{ preview.isProduction ? local('生产环境', 'Production') : '' }}</p><JsonTree :value="preview.preview" :initial-expanded-depth="2" /></template>
       <details v-else-if="data"><summary>{{ local('完整 Inspect 详情', 'Full inspect details') }}</summary><JsonTree :value="data" :initial-expanded-depth="2" /></details>
     </div>

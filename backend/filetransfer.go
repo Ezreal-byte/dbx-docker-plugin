@@ -18,7 +18,7 @@ import (
 // filetransfer.go 容器文件的下载与上传。
 //
 // 下载：exec 固定脚本 `head -c <size> -- "$1"`，输出经 binary channel docker-file 分块推给前端。
-// 上传：exec 固定脚本 `head -c "$1" > "$2"`，文件内容作为 stdin 经 docker-exec 通道分块写入。
+// 上传：经过预览门禁后，固定脚本写入临时文件；完整接收并复核目标后原子替换。
 //       `head -c N` 读满 N 字节即退出，因此不需要半关闭 stdin（hijacked 连接没有 CloseWrite），
 //       由前端按精确字节数发送，写完后后端自然收到退出帧。
 //
@@ -208,11 +208,12 @@ func (p *plugin) startArchiveDownload(sess *session, containerID, path, sessionI
 // startFileUpload 在容器内创建/覆盖文件，内容由前端经 docker-exec 通道写入 stdin。
 func (p *plugin) startFileUpload(sess *session, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
 	var in struct {
-		ContainerID string `json:"containerId"`
-		Path        string `json:"path"`
-		SessionID   string `json:"sessionId"`
-		Size        int64  `json:"size"`
-		Mode        string `json:"mode"`
+		ContainerID  string `json:"containerId"`
+		Path         string `json:"path"`
+		SessionID    string `json:"sessionId"`
+		Size         int64  `json:"size"`
+		Mode         string `json:"mode"`
+		PreviewToken string `json:"previewToken"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil || in.ContainerID == "" || in.Path == "" {
 		return nil, errors.New("startFileUpload requires containerId and path")
@@ -229,29 +230,34 @@ func (p *plugin) startFileUpload(sess *session, raw json.RawMessage, emitter *sd
 	if in.Size < 0 || in.Size > maxFileTransferBytes {
 		return nil, fmt.Errorf("Upload size %d is outside the supported range", in.Size)
 	}
-	mode := "wb"
+	mode := "overwrite"
 	switch in.Mode {
 	case "", "overwrite":
 	case "append":
-		mode = "ab"
+		mode = "append"
 	default:
 		return nil, fmt.Errorf("Unsupported upload mode: %s", in.Mode)
 	}
+	if in.PreviewToken == "" {
+		return nil, errors.New("Upload requires a confirmed upload_file preview")
+	}
+	args := map[string]any{"containerId": in.ContainerID, "path": in.Path, "size": float64(in.Size), "mode": mode}
+	t, _ := findMutation("upload_file")
+	if err := p.consumePreview(sess, t, args, in.PreviewToken); err != nil {
+		return nil, err
+	}
+	snapshot := args["_previewSnapshot"].(map[string]any)
+	in.ContainerID = snapshot["containerId"].(string)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// dd 的 oflag=append + conv=notrunc 保证追加语义；缺省时直接覆盖。
-	script := `head -c "$1" > "$2"`
-	if mode == "ab" {
-		script = `head -c "$1" >> "$2"`
-	}
 	created, err := sess.client.cli.ContainerExecCreate(ctx, in.ContainerID, container.ExecOptions{
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
 		Tty:          false,
-		Cmd:          []string{"/bin/sh", "-c", script, "dbx", strconv.FormatInt(in.Size, 10), in.Path},
+		Cmd:          []string{"/bin/sh", "-c", atomicUploadScript, "dbx", strconv.FormatInt(in.Size, 10), in.Path, snapshot["state"].(string), mode},
 	})
 	if err != nil {
 		return nil, err

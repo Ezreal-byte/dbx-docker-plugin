@@ -99,7 +99,7 @@ func (p *plugin) startTask(sess *session, t toolDefinition, args map[string]any,
 				}
 			}
 		}()
-		worker := &session{client: sess.client, conn: sess.conn, parent: sess, ctx: ctx}
+		worker := &session{client: sess.client, conn: sess.conn, parent: sess, ctx: ctx, automated: automation}
 		var value any
 		var runErr error
 		func() {

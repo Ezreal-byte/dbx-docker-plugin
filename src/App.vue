@@ -299,6 +299,8 @@ const canExecutePrune = computed(
   () =>
     !isReadOnly.value &&
     !pruneRunning.value &&
+    !prunePreviewLoading.value &&
+    !!boundPrunePreview.value &&
     prunePhraseMatches.value &&
     !!prunePreview.value &&
     prunePreview.value.count > 0,
@@ -315,21 +317,28 @@ function pruneChoiceIsAll(choice: PruneChoice): boolean {
   return choice === 'images-all' || choice === 'volumes-all';
 }
 
+let prunePreviewSequence = 0;
 async function loadPrunePreview() {
+  const request = ++prunePreviewSequence, choice = pruneChoice.value, id = connectionId.value;
   prunePreviewLoading.value = true;
   prunePreviewError.value = '';
   try {
     boundPrunePreview.value = undefined;
-    if (isReadOnly.value) prunePreview.value = await api.prunePreview(connectionId.value, apiPruneTarget(pruneChoice.value), pruneChoiceIsAll(pruneChoice.value));
+    if (isReadOnly.value) {
+      const preview = await api.prunePreview(id, apiPruneTarget(choice), pruneChoiceIsAll(choice));
+      if (request === prunePreviewSequence && id === connectionId.value) prunePreview.value = preview;
+    }
     else {
-      const preview = await mutationPreview(connectionId.value, 'prune_resources', { target: apiPruneTarget(pruneChoice.value), all: pruneChoiceIsAll(pruneChoice.value) });
+      const preview = await mutationPreview(id, 'prune_resources', { target: apiPruneTarget(choice), all: pruneChoiceIsAll(choice) });
+      if (request !== prunePreviewSequence || id !== connectionId.value) return;
       boundPrunePreview.value = preview; prunePreview.value = preview.preview as DockerPrunePreview;
     }
   } catch (cause: any) {
+    if (request !== prunePreviewSequence) return;
     prunePreview.value = undefined;
     prunePreviewError.value = cause?.message || String(cause);
   } finally {
-    prunePreviewLoading.value = false;
+    if (request === prunePreviewSequence) prunePreviewLoading.value = false;
   }
 }
 
@@ -381,9 +390,10 @@ function openRename(container: DockerContainer) {
 
 async function submitRename() {
   const name = renameDraft.value.name.trim();
-  if (!name || renameSubmitting.value) return;
+  if (!name || renameSubmitting.value || isReadOnly.value) return;
   renameSubmitting.value = true;
   try {
+    if (!(await confirmProductionMutation(t('renameContainer')))) return;
     await api.renameContainer(connectionId.value, renameDraft.value.containerId, name);
     toast(t('containerRenamed', { name }), 2400);
     renameOpen.value = false;
@@ -416,15 +426,12 @@ function openTagImage(item: DockerImage) {
 
 async function submitTagImage() {
   const repository = tagDraft.value.repository.trim();
-  if (!repository || tagSubmitting.value) return;
+  if (!repository || tagSubmitting.value || isReadOnly.value) return;
   tagSubmitting.value = true;
   try {
-    const result = await api.tagImage(
-      connectionId.value,
-      tagDraft.value.imageId,
-      repository,
-      tagDraft.value.tag.trim() || 'latest',
-    );
+    const args = { imageId: tagDraft.value.imageId, repository, tag: tagDraft.value.tag.trim() || 'latest' };
+    const preview = await previewAndConfirm('tag_image', args); if (!preview) return;
+    const result = await mutationExecute<{ reference: string }>(connectionId.value, 'tag_image', args, preview);
     toast(t('imageTagged', { reference: result.reference }), 3000);
     tagOpen.value = false;
     await loadResource('images');
@@ -445,9 +452,10 @@ async function removeImageTag(reference: string) {
     toast(t('readOnly'), 2400);
     return;
   }
-  if (!(await requestConfirmation(t('confirmRemoveTag', { reference })))) return;
   try {
-    await api.untagImage(connectionId.value, reference);
+    const args = { reference };
+    const preview = await previewAndConfirm('untag_image', args); if (!preview) return;
+    await mutationExecute(connectionId.value, 'untag_image', args, preview);
     toast(t('tagRemoved', { reference }), 3000);
     await loadResource('images');
   } catch (cause: any) {
@@ -810,6 +818,7 @@ async function closeDetail() {
 }
 
 function requestConfirmation(message: string): Promise<boolean> {
+  if (dangerResolve || workbenchClosed) return Promise.resolve(false);
   dangerMessage.value = message;
   dangerOpen.value = true;
   return new Promise((resolve) => {
@@ -825,7 +834,7 @@ function settleConfirmation(confirmed: boolean) {
 }
 
 async function confirmAction(container: DockerContainer, action: DockerContainerAction | 'remove'): Promise<boolean> {
-  const dangerous = isProduction.value || ['stop', 'restart', 'remove'].includes(action);
+  const dangerous = isProduction.value || ['stop', 'restart', 'pause', 'remove'].includes(action);
   if (!dangerous) return true;
   return requestConfirmation(t('confirmAction', { action: t(`action.${action}`), name: containerName(container) }));
 }
@@ -839,9 +848,9 @@ async function runAction(container: DockerContainer, action: DockerContainerActi
     if (isReadOnly.value) toast(t('readOnly'), 2400);
     return;
   }
-  if (!(await confirmAction(container, action))) return;
   actionInFlight.value = { ...actionInFlight.value, [container.id]: action };
   try {
+    if (!(await confirmAction(container, action))) return;
     await api.containerAction(connectionId.value, container.id, action);
     toast(t('actionSucceeded', { action: t(`action.${action}`), name: containerName(container) }), 2400);
     await loadContainers();
@@ -1158,9 +1167,9 @@ function openPushImage(item: DockerImage) {
 }
 
 async function pushImage() {
-  if (!(await confirmProductionMutation(t('pushImage')))) return;
   const targetReference = pushDraft.value.targetReference.trim();
-  if (!targetReference) return;
+  if (!targetReference || isReadOnly.value) return;
+  if (!(await requestConfirmation(local(`确认推送到 ${targetReference}？远端同名标签可能被覆盖。`, `Push to ${targetReference}? The remote tag may be overwritten.`)))) return;
   transferOpen.value = true;
   pushImageOpen.value = false;
   const auth: DockerRegistryAuth | undefined =
@@ -1409,9 +1418,12 @@ async function fileMenuAction(action: string) {
   if (action === 'upload') return triggerUpload();
   if (action === 'delete' && entry && selectedContainer.value) {
     const containerId = selectedContainer.value.id;
-    if (!await requestConfirmation(local(`删除 ${entry.path}${entry.kind === 'directory' ? ' 及其全部内容' : ''}？此操作无法撤销。`, `Delete ${entry.path}${entry.kind === 'directory' ? ' and all its contents' : ''}? This cannot be undone.`))) return;
-    if (containerId !== selectedContainerId.value) return;
-    try { await invoke(connectionId.value, 'docker/fileOperation', { containerId, operation: action, path: entry.path }); await loadFiles(); }
+    try {
+      const args = { containerId, operation: action, path: entry.path };
+      const preview = await previewAndConfirm('delete_file', args);
+      if (!preview || containerId !== selectedContainerId.value) return;
+      await mutationExecute(connectionId.value, 'delete_file', args, preview); await loadFiles();
+    }
     catch (e) { toast(String(e), 5000); }
     return;
   }
@@ -1423,6 +1435,7 @@ async function saveFileEdit() {
   if (!draft.name || draft.name === '.' || draft.name === '..' || /[\/\0\r\n]/.test(draft.name)) { draft.error = local('请输入有效名称，不能包含斜杠或换行。', 'Enter a valid name without slashes or newlines.'); return; }
   draft.busy = true; draft.error = '';
   try {
+    if (!(await confirmProductionMutation(`${fileEditTitle.value}: ${draft.path} / ${draft.name}`))) return;
     await invoke(connectionId.value, 'docker/fileOperation', { containerId: selectedContainer.value.id, operation: draft.operation, path: draft.operation === 'rename' ? draft.path : joinContainerPath(draft.path, draft.name), name: draft.name });
     draft.open = false; await loadFiles();
   } catch (e) { draft.error = String(e); } finally { draft.busy = false; }
@@ -1546,6 +1559,15 @@ async function uploadOne(file: File, targetPath: string, target: { connectionId:
     toast(t('fileTooLarge', { size: formatBytes(MAX_FILE_TRANSFER_BYTES) }), 5000);
     return;
   }
+  let preview: MutationPreview;
+  try {
+    preview = await mutationPreview(target.connectionId, 'upload_file', { containerId: target.containerId, path: targetPath, size: file.size, mode: 'overwrite' });
+    if ((preview.preview as { exists?: boolean })?.exists || preview.isProduction) {
+      const message = local(`确认上传到 ${target.name}:${targetPath}？同名文件将被替换。`, `Upload to ${target.name}:${targetPath}? An existing file will be replaced.`);
+      if (!(await requestConfirmation(`${preview.isProduction ? local('生产环境 · ', 'Production · ') : ''}${message}`))) return;
+    }
+    if (workbenchClosed || isReadOnly.value || target.connectionId !== connectionId.value) return;
+  } catch (cause: any) { toast(cause?.message || String(cause), 5000); return; }
   const sessionId = newSessionId();
   let exitCode: number | undefined;
   let stderr = '';
@@ -1574,7 +1596,7 @@ async function uploadOne(file: File, targetPath: string, target: { connectionId:
   });
 
   try {
-    await api.startFileUpload(target.connectionId, target.containerId, targetPath, sessionId, file.size);
+    await api.startFileUpload(target.connectionId, target.containerId, targetPath, sessionId, file.size, preview.previewToken);
     if (abort.signal.aborted) { await api.stopExec(target.connectionId, sessionId); return; }
     const buffer = new Uint8Array(await file.arrayBuffer());
     await sendExecBytes(sessionId, buffer, (sent) => patchFileTransfer(sessionId, { bytes: sent }), abort.signal);
@@ -1749,15 +1771,25 @@ onUnmounted(() => { const plugin = getPlugin(); void plugin.ai?.clearRecommendat
 
 const mutationDialog = ref(false), pendingPreview = ref<MutationPreview>(), pendingOperation = ref('');
 let resolveMutation: ((confirmed: boolean) => void) | undefined;
+const mutationLabel = computed(() => ({
+  remove_container: local('删除容器', 'Remove container'), remove_image: local('删除镜像', 'Remove image'),
+  remove_network: local('删除网络', 'Remove network'), remove_volume: local('删除卷', 'Remove volume'),
+  apply_compose: local('部署 / 替换 Compose', 'Deploy / replace Compose'), tag_image: local('更改镜像标签', 'Change image tag'),
+  untag_image: local('删除镜像标签', 'Remove image tag'), delete_file: local('删除容器文件', 'Delete container file'),
+}[pendingOperation.value] || local('操作预览', 'Operation preview')));
 async function previewAndConfirm(operation: string, args: Record<string, unknown>) {
-  const preview = await mutationPreview(connectionId.value, operation, args);
+  if (resolveMutation || workbenchClosed) return;
+  const id = connectionId.value;
+  const preview = await mutationPreview(id, operation, args);
+  if (resolveMutation || workbenchClosed || id !== connectionId.value) return;
   pendingPreview.value = preview; pendingOperation.value = operation; mutationDialog.value = true;
-  return (await new Promise<boolean>(resolve => { resolveMutation = resolve; })) ? preview : undefined;
+  return (await new Promise<boolean>(resolve => { resolveMutation = resolve; })) && !isReadOnly.value && id === connectionId.value ? preview : undefined;
 }
 function settleMutation(confirmed: boolean) { mutationDialog.value = false; resolveMutation?.(confirmed); resolveMutation = undefined; }
 function notifyTask(id: string) { toast(local('任务已提交：', 'Task started: ') + id, 4000); window.dispatchEvent(new CustomEvent('docker-task-started')); }
 watch(mutationDialog, value => { if (!value) settleMutation(false); });
 onUnmounted(() => settleMutation(false));
+onUnmounted(() => settleConfirmation(false));
 </script>
 
 <template>
@@ -2202,9 +2234,10 @@ onUnmounted(() => settleMutation(false));
       </template>
     </main>
 
-    <Dialog :open="mutationDialog" content-class="dlg-wide automation-dialog" @update:open="settleMutation(false)">
-      <div class="dlg-header"><div class="dlg-title">{{ local('操作预览', 'Operation preview') }} · {{ pendingOperation }}</div><div class="dlg-desc">{{ connectionName || connectionId }} · {{ isProduction ? local('生产环境', 'Production') : '' }}</div></div>
+    <Dialog :open="mutationDialog" elevated content-class="dlg-wide automation-dialog" @update:open="settleMutation(false)">
+      <div class="dlg-header"><div class="dlg-title">{{ local('操作预览', 'Operation preview') }} · {{ mutationLabel }}</div><div class="dlg-desc">{{ connectionName || connectionId }} · {{ pendingPreview?.isProduction ? local('生产环境', 'Production') : '' }}</div></div>
       <p class="hint-text">{{ local('仅执行预览中的范围；五分钟内有效，目标变化后需重新预览。', 'Execution is bound to this preview for five minutes; changed targets require a new preview.') }}</p>
+      <p v-if="pendingOperation === 'delete_file'" class="error-banner">{{ local('文件删除无法撤销；删除文件夹会删除其中全部内容。', 'File deletion cannot be undone; deleting a folder removes all its contents.') }}</p>
       <div class="automation-scroll"><JsonTree :value="pendingPreview?.preview" :initial-expanded-depth="2" /></div>
       <div class="dlg-footer"><button class="btn btn-outline" @click="settleMutation(false)">{{ t('cancel') }}</button><button class="btn btn-danger" @click="settleMutation(true)">{{ local('确认执行', 'Confirm execution') }}</button></div>
     </Dialog>

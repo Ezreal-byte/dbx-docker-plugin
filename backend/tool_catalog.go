@@ -81,9 +81,9 @@ func toolCatalog() []toolDefinition {
 	add("container_action", "Start, stop, restart, pause or unpause a container.", "manage", "docker/containerAction", object(schema{"containerId": str(256), "action": enum("start", "stop", "restart", "pause", "unpause")}, "containerId", "action"), false, false)
 	add("rename_container", "Rename a container.", "manage", "docker/renameContainer", object(schema{"containerId": str(256), "name": str(128)}, "containerId", "name"), false, false)
 	add("pull_image", "Pull an image as a cancellable task; no registry credentials are accepted as tool parameters.", "manage", "docker/pullImage", single("image"), true, false)
-	add("tag_image", "Tag an image with a repository and tag.", "manage", "docker/tagImage", object(schema{"imageId": str(256), "repository": str(256), "tag": str(128)}, "imageId", "repository", "tag"), false, false)
+	add("tag_image", "Tag an image with a repository and tag. Preview includes any existing target tag which will be replaced.", "manage", "docker/tagImage", object(schema{"imageId": str(256), "repository": str(256), "tag": str(128)}, "imageId", "repository", "tag"), false, true)
 	for _, op := range []string{"connect", "disconnect"} {
-		add(op+"_network", op+" a container to/from a user-defined network.", "manage", "docker/"+op+"Network", object(schema{"networkId": str(256), "containerId": str(256)}, "networkId", "containerId"), false, false)
+		add(op+"_network", op+" a container to/from a user-defined network.", "manage", "docker/"+op+"Network", object(schema{"networkId": str(256), "containerId": str(256)}, "networkId", "containerId"), false, op == "disconnect")
 	}
 	add("cancel_task", "Request cancellation of a task. Completed changes remain; Compose attempts rollback.", "manage", "docker/taskCancel", single("taskId"), false, false)
 	port := object(schema{"containerPort": integer(1, 65535), "hostPort": integer(1, 65535), "protocol": enum("tcp", "udp", "sctp"), "hostIp": str(128)}, "containerPort")

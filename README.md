@@ -6,7 +6,15 @@ The workbench lists containers, images, volumes, and networks. It supports conta
 
 The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the host initialization handshake and re-applies the language on `dbx-plugin-init` / `dbx-plugin-env`, so switching the DBX language updates the workbench without a reload.
 
-## 0.2.3 Windows verification candidate
+## 0.3.0 Windows verification candidate
+
+- Destructive workbench RPCs now enforce bound previews, including legacy deletion endpoints, tag replacement and network disconnect. Read-only flags use the current host lifecycle.
+- File uploads require a backend preview; replacing a file asks for confirmation. Uploads stage data and verify the original target before committing, preserving it on interruption.
+- Confirmation dialogs stay above editors, keep keyboard focus inside, and cancel on Escape. Pause and image push also require confirmation.
+- Push and pull-request CI verifies Windows/Linux, runs a disposable-container safety check on Linux, and saves the Windows package as an Actions artifact.
+- [0.3.0 safety audit and verification](docs/0.3.0-audit.md)
+
+### Previous 0.2.3 changes
 
 - Compose groups use the theme's muted background, while child containers use the normal background. Column resizing and stored-width preferences have been removed from all four resource tables.
 - File rename/create dialogs submit directly through the plugin bridge, including Enter, without relying on native form submission blocked by the DBX sandbox. Monitoring no longer shows the redundant heading and subtitle.
@@ -155,9 +163,9 @@ node scripts/smoke-sidecar.mjs dist/verify-sidecar.exe http://127.0.0.1:2375 <ru
 
 It verifies the handshake, direct and tunnel-routed connections, the remote plain-HTTP guard, resource listing, log streaming, read-only file browsing, the interactive terminal (stdin, resize, exit), a container file upload/download byte-for-byte round-trip, the read-only terminal/upload guards, disk usage, image tag/untag round-trip, image layer history, and container rename round-trip.
 
-The container rename and image tag checks restore the original state in a `finally` block, the file round-trip removes its temporary file, and pruning is skipped unless `SMOKE_ALLOW_PRUNE=1` is set — pruning really deletes stopped containers.
+The container rename and image tag checks restore the original state in a `finally` block, and the file round-trip removes its temporary file. Prune checks only inspect candidates and verify rejection without a token; the smoke test never executes daemon-wide cleanup.
 
-On Windows x64, the package is `dist/io.dbx.docker-0.2.3-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
+On Windows x64, the package is `dist/io.dbx.docker-0.3.0-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
 
 To check form visibility, localization, required fields, secret storage and serialization against an upstream checkout:
 

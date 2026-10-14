@@ -420,7 +420,7 @@ func (p *plugin) tagImage(sess *session, raw json.RawMessage) (any, error) {
 
 // ---------- 删除单个镜像标签 ----------
 // 与 removeImage 不同：removeImage 会删掉镜像的全部标签，这里只摘掉一个引用，
-// 便于清理打错的标签而不影响其它 tag 与镜像数据。
+// Docker 可能在删除最后一个标签时同时删除镜像，必须经过绑定预览。
 
 func (p *plugin) untagImage(sess *session, raw json.RawMessage) (any, error) {
 	var in struct {

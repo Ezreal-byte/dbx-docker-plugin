@@ -9,6 +9,7 @@ const name='dbx-files-'+randomUUID().slice(0,8), dataDir=await mkdtemp(join(tmpd
 const sidecar=new Sidecar(resolve(process.argv[2]||'dist/verify-sidecar.exe'),dataDir);
 const connection={id:name,plugin_id:'io.dbx.docker',host:'127.0.0.1',port:2375,external_config:{protocol:'http',api_version:'auto'}};
 const rpc=(method,args={})=>sidecar.request(method,{connectionId:name,...args});
+const mutate=async(operation,args)=>{const preview=await rpc('docker/mutation',{operation,arguments:args});return rpc('docker/mutation',{operation,arguments:{...args,previewToken:preview.previewToken}})};
 let containerId, buffer=Buffer.alloc(0), timer;
 let transferResolve,transferReject; const transfer=new Promise((r,j)=>{transferResolve=r;transferReject=j}); transfer.catch(()=>{});
 let chunks=[];
@@ -27,7 +28,7 @@ try {
  const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZgAAAABJRU5ErkJggg==';
  const created=await rpc('docker/createContainer',{request:{name,image:'alpine:latest',command:['/bin/sh','-c',`printf '%s' '${png}' | base64 -d > /tmp/sample.png; printf 'server.port=8080\nserver.name=test\n' > /tmp/application.properties; sleep 300`],start:true}});containerId=created.id;
  const rootEntries=await rpc('docker/listContainerFiles',{containerId,path:'/'});assert(rootEntries.some(entry=>entry.path==='/tmp'));assert(rootEntries.every(entry=>!entry.path.startsWith('//')));
- const op=(operation,path,newName)=>rpc('docker/fileOperation',{containerId,operation,path,name:newName});
+ const op=(operation,path,newName)=>operation==='delete'?mutate('delete_file',{containerId,operation,path}):rpc('docker/fileOperation',{containerId,operation,path,name:newName});
  await op('mkdir','/tmp/folder with space');
  await op('create',"/tmp/folder with space/quote'$(touch injected).txt");
  await assert.rejects(op('create',"/tmp/folder with space/quote'$(touch injected).txt"),/exists/);
@@ -45,7 +46,7 @@ try {
  console.log('PASS: create folder/file, reject overwrite, rename, PNG/config preview, tar download, recursive delete, quoted paths and root protection; fixture '+name);
 } finally {
  clearTimeout(timer);
- if(containerId){await rpc('docker/containerAction',{containerId,action:'stop'});await rpc('docker/removeContainer',{containerId,force:false});}
+ if(containerId){await rpc('docker/containerAction',{containerId,action:'stop'});await mutate('remove_container',{containerId});}
  await sidecar.close();
  if(!resolve(dataDir).startsWith(resolve(tmpdir())+sep+'dbx-files-check-'))throw Error('Unexpected temp path');
  await rm(dataDir,{recursive:true,force:true});

@@ -128,9 +128,10 @@ export function startFileUpload(
   path: string,
   sessionId: string,
   size: number,
+  previewToken: string,
   mode: 'overwrite' | 'append' = 'overwrite',
 ) {
-  return invoke<{ sessionId: string }>(connectionId, 'docker/startFileUpload', { containerId, path, sessionId, size, mode });
+  return invoke<{ sessionId: string }>(connectionId, 'docker/startFileUpload', { containerId, path, sessionId, size, mode, previewToken });
 }
 
 export function getEngineDetails(connectionId: string) {

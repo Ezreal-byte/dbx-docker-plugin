@@ -210,13 +210,13 @@ func (p *plugin) startExec(sess *session, raw json.RawMessage, emitter *sdk.Emit
 	return map[string]any{"sessionId": in.SessionID}, nil
 }
 
-// inspectExecExitCode 读取退出码；查询失败时返回 0（终端已结束，不必再报错）。
+// Unknown or still-running exec state must never report a successful upload.
 func inspectExecExitCode(sess *session, execID string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	inspect, err := sess.client.cli.ContainerExecInspect(ctx, execID)
-	if err != nil {
-		return 0
+	if err != nil || inspect.Running {
+		return -1
 	}
 	return inspect.ExitCode
 }

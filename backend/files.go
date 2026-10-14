@@ -38,7 +38,7 @@ func fileOperationCommand(operation, target, name string) (string, []string, err
 		}
 		dest := path.Join(path.Dir(target), name)
 		args = append(args, dest)
-		return `if [ -e "$2" ] || [ -L "$2" ]; then printf 'Target already exists\n' >&2; exit 1; fi; mv -n -- "$1" "$2" && { [ ! -e "$1" ] && [ ! -L "$1" ]; }`, args, nil
+		return `if [ -e "$2" ] || [ -L "$2" ]; then printf 'Target already exists\n' >&2; exit 1; fi; mv -nT -- "$1" "$2" && { [ ! -e "$1" ] && [ ! -L "$1" ]; }`, args, nil
 	case "delete":
 		return `rm -r -- "$1"`, args, nil
 	default:

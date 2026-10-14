@@ -16,6 +16,7 @@ const dataDir = await mkdtemp(join(tmpdir(), 'dbx-docker-live-'));
 const desktop = new Sidecar(executable, dataDir), external = new Sidecar(executable, dataDir);
 const connection = { id: prefix, plugin_id: 'io.dbx.docker', name: prefix, host: '127.0.0.1', port: 2375, external_config: { protocol: 'http', api_version: 'auto' } };
 const rpc = (method, params = {}) => desktop.request(method, { connectionId: connection.id, ...params });
+const uiMutation = async (operation, args) => { const bound = await rpc('docker/mutation', { operation, arguments: args }); return rpc('docker/mutation', { operation, arguments: { ...args, previewToken: bound.previewToken } }); };
 const call = (tool, args = {}, conn = connection) => external.request('mcp/call', { tool, arguments: args, lifecycle: { connection: conn, connectionId: conn.id } });
 const result = r => { assert.equal(r.isError, false, JSON.stringify(r)); return JSON.parse(r.content[0].text); };
 const resources = { containers: [], networks: [], volumes: [] };
@@ -47,7 +48,7 @@ try {
   const attachedPreview = result(await call('remove_volume', { name: prefix + '-data' }));
   assert.equal((await call('remove_volume', { name: prefix + '-data', previewToken: attachedPreview.previewToken })).isError, true);
   assert.equal((await call('container_action', { containerId: created.id, action: 'stop' }, { ...connection, read_only: true })).isError, true);
-  result(await call('disconnect_network', { networkId: network.id, containerId: created.id }));
+  await remove('disconnect_network', { networkId: network.id, containerId: created.id });
   result(await call('connect_network', { networkId: network.id, containerId: created.id }));
   result(await call('inspect_image', { imageId: 'alpine:latest' }));
   assert(Array.isArray(result(await call('image_history', { imageId: 'alpine:latest' }))));
@@ -89,15 +90,15 @@ try {
   // Cleanup by immutable IDs / names tracked during this run, using only UI
   // business methods so revocation does not prevent cleanup of our fixtures.
   for (const id of resources.containers.reverse()) {
-    try { await rpc('docker/containerAction', { containerId: id, action: 'stop' }); await rpc('docker/removeContainer', { containerId: id }); }
+    try { await rpc('docker/containerAction', { containerId: id, action: 'stop' }); await uiMutation('remove_container', { containerId: id }); }
     catch (e) { if (!/No such container|not found/i.test(e.message)) { failed = true; console.error('Cleanup container:', id, e.message); } }
   }
   for (const id of resources.networks.reverse()) {
-    try { await rpc('docker/removeNetwork', { networkId: id }); }
+    try { await uiMutation('remove_network', { networkId: id }); }
     catch (e) { if (!/not found|No such network/i.test(e.message)) { failed = true; console.error('Cleanup network:', id, e.message); } }
   }
   for (const name of resources.volumes) {
-    try { await rpc('docker/removeVolume', { name }); }
+    try { await uiMutation('remove_volume', { name }); }
     catch (e) { failed = true; console.error('Cleanup volume:', name, e.message); }
   }
   await desktop.close(); await external.close();
