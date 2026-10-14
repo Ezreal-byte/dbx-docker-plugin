@@ -120,6 +120,7 @@ func (p *plugin) startExec(sess *session, raw json.RawMessage, emitter *sdk.Emit
 		Command     []string `json:"command"`
 		Cols        int      `json:"cols"`
 		Rows        int      `json:"rows"`
+		ColorOutput bool     `json:"colorOutput"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil || in.ContainerID == "" {
 		return nil, errors.New("startExec requires containerId")
@@ -135,6 +136,9 @@ func (p *plugin) startExec(sess *session, raw json.RawMessage, emitter *sdk.Emit
 	command := sanitizeExecCommand(in.Command)
 	if len(command) == 0 {
 		command = []string{"/bin/sh"}
+	}
+	if in.ColorOutput {
+		command = colorizeShellCommand(command)
 	}
 	cols, rows := in.Cols, in.Rows
 	if cols <= 0 {

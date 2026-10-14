@@ -116,12 +116,7 @@ input, textarea, select { font: inherit; color: var(--foreground); }
   position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--border);
   background: var(--background); padding: 0.4rem 0.75rem; font-size: 0.75rem; font-weight: 500; color: var(--muted-foreground);
 }
-.column-resizer { position: absolute; top: 0; right: 0; width: 9px; height: 100%; cursor: col-resize; touch-action: none; z-index: 6; }
-.column-resizer::after { content: ''; position: absolute; top: 25%; bottom: 25%; right: 3px; width: 2px; background: var(--border); border-radius: 2px; }
-.column-resizer:hover::after, .column-resizer:focus-visible::after { background: var(--primary); }
-.docker-table th { position: sticky; }
 .docker-table td { border-bottom: 1px solid var(--border); padding: 0.25rem 0.75rem; height: 34px; vertical-align: middle; }
-.docker-table tbody tr:hover { background: color-mix(in srgb, var(--muted) 42%, transparent); }
 .th-right { text-align: right; }
 .docker-sort { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
 .docker-sort .icon { width: 0.75rem; height: 0.75rem; opacity: 0.55; }
@@ -147,7 +142,8 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .dot-paused { background: #f59e0b; }
 .dot-stopped { background: #a1a1aa; }
 .row-actions { display: flex; justify-content: flex-end; gap: 4px; align-items: center; }
-.docker-table .compose-header > td { background: color-mix(in srgb, var(--muted) 32%, transparent); font-weight: 600; }
+.docker-table .compose-header > td { background: var(--muted); font-weight: 600; }
+.docker-table .compose-child > td { background: var(--background); }
 .compose-toggle { display: flex; align-items: center; gap: 0.5rem; font-weight: 500; }
 .compose-toggle .icon { width: 1rem; height: 1rem; }
 .compose-icon { color: #0ea5e9; }
@@ -366,7 +362,7 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .transfer-saved .docker-copy-button { flex-shrink: 0; }
 
 /* ---------- 表格斑马纹与行选中 ---------- */
-.docker-table tbody tr:nth-child(even):not(.compose-header) > td { background: color-mix(in srgb, var(--muted) 32%, transparent); }
+.docker-table tbody tr:where(:nth-child(even):not(.compose-header):not(.compose-child)) > td { background: color-mix(in srgb, var(--muted) 32%, var(--background)); }
 .docker-table tbody tr:not(.compose-header) { cursor: default; }
 .docker-table tbody tr.row-selected > td {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
@@ -538,7 +534,7 @@ input, textarea, select { font: inherit; color: var(--foreground); }
 .mount-type,.mount-access,.overview-count { color:var(--muted-foreground); background:var(--muted); border-radius:4px; padding:2px 6px; font-size:10px; width:fit-content; }
 .overview-count { margin-left:auto; }.overview-empty { padding:12px 0; font-size:12px; color:var(--muted-foreground); }
 .overview-environment summary { cursor:pointer; font-size:13px; }.overview-environment summary>span { margin-left:10px; font-size:11px; }.overview-environment[open] summary { margin-bottom:14px; }
-.monitoring-pane { max-width:1440px; margin:0 auto; gap:16px; }.monitor-heading { display:flex; align-items:center; gap:16px; justify-content:space-between; padding:4px 0; }.monitor-heading h2 { font-size:18px; font-weight:600; margin:0 0 6px; }.monitor-heading p { font-size:12px; color:var(--muted-foreground); margin:0; }.monitor-live { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); white-space:nowrap; }.monitor-live i { width:6px; height:6px; background:var(--muted-foreground); border-radius:50%; }.monitor-live i.active { background:#22c55e; }
+.monitoring-pane { max-width:1440px; margin:0 auto; gap:16px; }.monitor-heading { display:flex; align-items:center; justify-content:flex-end; padding:4px 0; }.monitor-live { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); white-space:nowrap; }.monitor-live i { width:6px; height:6px; background:var(--muted-foreground); border-radius:50%; }.monitor-live i.active { background:#22c55e; }
 .monitor-summary { grid-template-columns:repeat(4,minmax(0,1fr)); }.monitor-summary .docker-card { background:var(--background); border-radius:9px; padding:16px; gap:10px; }.monitor-summary .docker-card strong { font-size:18px; font-variant-numeric:tabular-nums; }.monitor-summary .docker-card:nth-child(n+3) strong { font-size:13px; }.chart-card { background:var(--background); border-radius:9px; padding:16px; }.chart-title { color:var(--foreground); }.echart-host { height:235px; }
 .files-pane { grid-template-columns:minmax(220px,30%) minmax(0,1fr); }.file-preview { display:flex; flex-direction:column; min-width:0; padding:0; overflow:hidden; background:var(--background); }.file-preview .code-editor { border:0; border-radius:0; flex:1; min-height:0; }.file-preview>.muted-text { padding:20px; }.preview-truncated { padding:8px 12px; font-size:11px; color:var(--muted-foreground); border-bottom:1px solid var(--border); }.image-preview { display:flex; flex-direction:column; align-items:center; gap:16px; padding:16px; height:100%; overflow:auto; }.image-preview img { max-width:100%; max-height:calc(100% - 85px); object-fit:contain; background:repeating-conic-gradient(var(--muted) 0% 25%,var(--background) 0% 50%) 50%/20px 20px; }.preview-caption { align-self:stretch; font-size:12px; color:var(--muted-foreground); }.transfer-context { font-size:10px; margin-top:6px; color:var(--muted-foreground); }.pop-content { max-width:calc(100vw - 24px); }.transfer-list { max-height:min(60vh,30rem); }
 @media(max-width:850px) { .overview-columns { grid-template-columns:1fr; }.overview-hero { flex-wrap:wrap; }.overview-state { flex-direction:row; align-items:center; flex-wrap:wrap; width:100%; }.monitor-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }

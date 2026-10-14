@@ -49,7 +49,6 @@ import ResourceDetails from './components/ResourceDetails.vue';
 import LoadingSkeleton from './components/LoadingSkeleton.vue';
 import FileContextMenu from './components/FileContextMenu.vue';
 import CodeEditor from './components/CodeEditor.vue';
-import ResizableHeader from './components/ResizableHeader.vue';
 import ContainerPorts from './components/ContainerPorts.vue';
 import ContainerOverview from './components/ContainerOverview.vue';
 import { composeFromInspects } from './compose';
@@ -130,12 +129,12 @@ const autoRefresh = ref(true);
 const refreshCountdown = ref(10);
 const lastRefreshAt = ref<Date>();
 const refreshInFlight = ref(false);
-const columnWidths = ref<Record<ResourceKind, number[]>>({
+const columnWidths: Record<ResourceKind, number[]> = {
   containers: [230, 120, 220, 260, 80, 180, 100, 260],
   images: [280, 140, 110, 180, 260],
   volumes: [220, 140, 140, 380],
   networks: [220, 150, 120, 120, 100, 100],
-});
+};
 const sortState = ref<{ key: string; direction: SortDirection }>({ key: 'name', direction: 'asc' });
 const dangerOpen = ref(false);
 const dangerMessage = ref('');
@@ -643,27 +642,7 @@ const diskUsageRows = computed<DiskUsageRow[]>(() => {
 });
 
 function tableStyle(kind: ResourceKind) {
-  return { width: `${columnWidths.value[kind].reduce((sum, width) => sum + width, 0)}px`, minWidth: '100%' };
-}
-let columnWidthsEdited = false;
-function resizeColumn(kind: ResourceKind, index: number, width: number) {
-  columnWidthsEdited = true;
-  columnWidths.value[kind][index] = width;
-}
-function saveColumnWidths() {
-  if (!getPlugin().capabilities?.storage) return;
-  void getPlugin().storage?.set('workbench-column-widths-v1', JSON.parse(JSON.stringify(columnWidths.value))).catch(() => {});
-}
-async function loadColumnWidths() {
-  if (!getPlugin().capabilities?.storage) return;
-  try {
-    const saved = await getPlugin().storage?.get('workbench-column-widths-v1') as Record<string, unknown> | undefined;
-    if (columnWidthsEdited) return;
-    for (const kind of Object.keys(columnWidths.value) as ResourceKind[]) {
-      const widths = saved?.[kind];
-      if (Array.isArray(widths) && widths.length === columnWidths.value[kind].length && widths.every(n => typeof n === 'number' && n >= 64 && n <= 1600)) columnWidths.value[kind] = widths;
-    }
-  } catch { /* Older hosts keep widths for the current workbench. */ }
+  return { minWidth: `${columnWidths[kind].reduce((sum, width) => sum + width, 0)}px` };
 }
 
 function upsertTransfer(progress: DockerTransferProgress, handle?: DockerStreamHandle) {
@@ -1733,7 +1712,6 @@ onMounted(async () => {
   document.addEventListener('dbx-plugin-init', handleHostEnv);
   document.addEventListener('dbx-plugin-env', handleHostEnv);
   await plugin.ready;
-  void loadColumnWidths();
   applyHostLocale();
   const context = plugin.context;
   connectionName.value = context.connection?.name || '';
@@ -1875,7 +1853,7 @@ onUnmounted(() => settleMutation(false));
           </div>
 
           <div v-else-if="detailTab === 'monitoring'" class="monitoring-pane">
-            <div class="monitor-heading"><div><h2>{{ local('资源监控', 'Resource monitoring') }}</h2><p>{{ local('CPU、内存与网络 / 磁盘吞吐', 'CPU, memory and network / disk throughput') }}</p></div><span class="monitor-live"><i :class="{ active: isRunning(selectedContainer) }" />{{ isRunning(selectedContainer) ? local('每 2 秒采样', 'Every 2 seconds') : local('容器已停止', 'Container stopped') }}</span></div>
+            <div class="monitor-heading"><span class="monitor-live"><i :class="{ active: isRunning(selectedContainer) }" />{{ isRunning(selectedContainer) ? local('每 2 秒采样', 'Every 2 seconds') : local('容器已停止', 'Container stopped') }}</span></div>
             <div class="monitor-summary">
               <div class="docker-card">
                 <span>CPU</span>
@@ -2016,14 +1994,14 @@ onUnmounted(() => settleMutation(false));
             </colgroup>
             <thead>
               <tr>
-                <ResizableHeader :width="columnWidths.containers[0]" @resize="resizeColumn('containers', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[1]" @resize="resizeColumn('containers', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[2]" @resize="resizeColumn('containers', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('image')">{{ t('image') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[3]" @resize="resizeColumn('containers', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('ports')">{{ t('ports') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[4]" @resize="resizeColumn('containers', 4, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('cpu')">CPU<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[5]" @resize="resizeColumn('containers', 5, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('memory')">{{ t('memory') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.containers[6]" @resize="resizeColumn('containers', 6, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('status')">{{ t('status') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader class="th-right" :width="columnWidths.containers[7]" @resize="resizeColumn('containers', 7, $event)" @commit="saveColumnWidths">{{ t('actions') }}</ResizableHeader>
+                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('image')">{{ t('image') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('ports')">{{ t('ports') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('cpu')">CPU<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('memory')">{{ t('memory') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('status')">{{ t('status') }}<Icon name="arrow-up-down" /></button></th>
+                <th class="th-right">{{ t('actions') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -2135,11 +2113,11 @@ onUnmounted(() => settleMutation(false));
             </colgroup>
             <thead>
               <tr>
-                <ResizableHeader :width="columnWidths.images[0]" @resize="resizeColumn('images', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('repositoryTag') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.images[1]" @resize="resizeColumn('images', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.images[2]" @resize="resizeColumn('images', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('size')">{{ t('size') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.images[3]" @resize="resizeColumn('images', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('created')">{{ t('created') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader class="th-right" :width="columnWidths.images[4]" @resize="resizeColumn('images', 4, $event)" @commit="saveColumnWidths">{{ t('actions') }}</ResizableHeader>
+                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('repositoryTag') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('size')">{{ t('size') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('created')">{{ t('created') }}<Icon name="arrow-up-down" /></button></th>
+                <th class="th-right">{{ t('actions') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -2179,10 +2157,10 @@ onUnmounted(() => settleMutation(false));
             </colgroup>
             <thead>
               <tr>
-                <ResizableHeader :width="columnWidths.volumes[0]" @resize="resizeColumn('volumes', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.volumes[1]" @resize="resizeColumn('volumes', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.volumes[2]" @resize="resizeColumn('volumes', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.volumes[3]" @resize="resizeColumn('volumes', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('mountpoint')">{{ t('mountpoint') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('mountpoint')">{{ t('mountpoint') }}<Icon name="arrow-up-down" /></button></th>
               </tr>
             </thead>
             <tbody>
@@ -2201,12 +2179,12 @@ onUnmounted(() => settleMutation(false));
             </colgroup>
             <thead>
               <tr>
-                <ResizableHeader :width="columnWidths.networks[0]" @resize="resizeColumn('networks', 0, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.networks[1]" @resize="resizeColumn('networks', 1, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.networks[2]" @resize="resizeColumn('networks', 2, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.networks[3]" @resize="resizeColumn('networks', 3, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.networks[4]" @resize="resizeColumn('networks', 4, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('internal')">{{ t('internal') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
-                <ResizableHeader :width="columnWidths.networks[5]" @resize="resizeColumn('networks', 5, $event)" @commit="saveColumnWidths"><button class="docker-sort" @click="toggleSort('attachable')">{{ t('attachable') }}<Icon name="arrow-up-down" /></button></ResizableHeader>
+                <th><button class="docker-sort" @click="toggleSort('name')">{{ t('name') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('id')">ID<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('driver')">{{ t('driver') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('scope')">{{ t('scope') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('internal')">{{ t('internal') }}<Icon name="arrow-up-down" /></button></th>
+                <th><button class="docker-sort" @click="toggleSort('attachable')">{{ t('attachable') }}<Icon name="arrow-up-down" /></button></th>
               </tr>
             </thead>
             <tbody>
@@ -2234,11 +2212,11 @@ onUnmounted(() => settleMutation(false));
     <FileContextMenu :open="fileMenu.open" :x="fileMenu.x" :y="fileMenu.y" :entry="fileMenu.entry" :read-only="isReadOnly" @close="fileMenu.open = false" @action="fileMenuAction" />
     <Dialog :open="fileEdit.open" @update:open="!fileEdit.busy && (fileEdit.open = $event)">
       <div class="dlg-header"><div class="dlg-title">{{ fileEditTitle }}</div><div class="dlg-desc break-all">{{ fileEdit.path }}</div></div>
-      <form @submit.prevent="saveFileEdit">
-        <label class="docker-field"><span>{{ t('name') }}</span><input v-model="fileEdit.name" class="input" autofocus :disabled="fileEdit.busy" /></label>
+      <div>
+        <label class="docker-field"><span>{{ t('name') }}</span><input v-model="fileEdit.name" class="input" autofocus :disabled="fileEdit.busy" @keydown.enter.prevent="saveFileEdit" /></label>
         <p v-if="fileEdit.error" class="error-text" role="alert">{{ fileEdit.error }}</p>
-        <div class="dlg-footer"><button type="button" class="btn btn-outline" :disabled="fileEdit.busy" @click="fileEdit.open = false">{{ t('cancel') }}</button><button class="btn btn-primary" :disabled="fileEdit.busy || !fileEdit.name || isReadOnly">{{ local('确定', 'Confirm') }}</button></div>
-      </form>
+        <div class="dlg-footer"><button type="button" class="btn btn-outline" :disabled="fileEdit.busy" @click="fileEdit.open = false">{{ t('cancel') }}</button><button type="button" class="btn btn-primary" :disabled="fileEdit.busy || !fileEdit.name || isReadOnly" @click="saveFileEdit"><Icon v-if="fileEdit.busy" name="loader-circle" class="spin" />{{ fileEdit.busy ? local('处理中…', 'Working…') : local('确定', 'Confirm') }}</button></div>
+      </div>
     </Dialog>
     <Dialog :open="createContainerOpen" content-class="dlg-wide" @update:open="createContainerOpen = $event">
       <div class="dlg-header">

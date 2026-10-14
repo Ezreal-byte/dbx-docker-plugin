@@ -99,7 +99,7 @@ export function stopStream(connectionId: string, sessionId: string) {
 }
 
 export function startExec(connectionId: string, containerId: string, sessionId: string, command: string[], cols: number, rows: number) {
-  return invoke<{ sessionId: string }>(connectionId, 'docker/startExec', { containerId, sessionId, command, cols, rows });
+  return invoke<{ sessionId: string }>(connectionId, 'docker/startExec', { containerId, sessionId, command, cols, rows, colorOutput: true });
 }
 
 export function execResize(connectionId: string, sessionId: string, cols: number, rows: number) {
