@@ -153,6 +153,7 @@ func (p *plugin) startExec(sess *session, raw json.RawMessage, emitter *sdk.Emit
 		AttachStderr: true,
 		Tty:          true,
 		Cmd:          command,
+		Env:          []string{"TERM=xterm-256color", "COLORTERM=truecolor", "CLICOLOR=1"},
 	})
 	if err != nil {
 		return nil, err

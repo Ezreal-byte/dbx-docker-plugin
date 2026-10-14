@@ -1,5 +1,7 @@
 package main
 
+import "github.com/docker/docker/api/types/container"
+
 // 对外数据模型与 dbx docker 分支 apps/desktop/src/types/docker.ts 一一对应（camelCase JSON）。
 
 type DockerConnectionInfo struct {
@@ -110,16 +112,21 @@ type DockerMountInput struct {
 }
 
 type DockerCreateContainerRequest struct {
-	Name          string              `json:"name"`
-	Image         string              `json:"image"`
-	Command       []string            `json:"command"`
-	Environment   []string            `json:"environment"`
-	Ports         []DockerPortBinding `json:"ports"`
-	Mounts        []DockerMountInput  `json:"mounts"`
-	Labels        map[string]string   `json:"labels"`
-	Network       string              `json:"network,omitempty"`
-	RestartPolicy string              `json:"restartPolicy"`
-	Start         bool                `json:"start"`
+	Entrypoint     []string                `json:"entrypoint,omitempty"`
+	User           string                  `json:"user,omitempty"`
+	WorkingDir     string                  `json:"workingDir,omitempty"`
+	Healthcheck    *container.HealthConfig `json:"healthcheck,omitempty"`
+	RestartRetries int                     `json:"restartRetries,omitempty"`
+	Name           string                  `json:"name"`
+	Image          string                  `json:"image"`
+	Command        []string                `json:"command"`
+	Environment    []string                `json:"environment"`
+	Ports          []DockerPortBinding     `json:"ports"`
+	Mounts         []DockerMountInput      `json:"mounts"`
+	Labels         map[string]string       `json:"labels"`
+	Network        string                  `json:"network,omitempty"`
+	RestartPolicy  string                  `json:"restartPolicy"`
+	Start          bool                    `json:"start"`
 }
 
 type DockerCreateContainerResult struct {

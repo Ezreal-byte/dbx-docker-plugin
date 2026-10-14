@@ -326,7 +326,7 @@ func TestTaskCancellationRestartAndConnectionIsolation(t *testing.T) {
 	}
 }
 func TestComposeRejectsUnsupportedFields(t *testing.T) {
-	for _, content := range []string{"services:\n  app:\n    image: alpine\n    privileged: true", "services:\n  app:\n    image: alpine\n    depends_on: [db]", "services:\n  app:\n    image: ${IMAGE}", "services:\n  app:\n    image: alpine\nnetworks:\n  default:\n    external: true"} {
+	for _, content := range []string{"services:\n  app:\n    image: alpine\n    privileged: true", "services:\n  app:\n    image: alpine\n    depends_on: [db]", "services:\n  app:\n    image: ${IMAGE}", "services:\n  app:\n    image: alpine\nnetworks:\n  default:\n    driver: overlay"} {
 		if _, err := buildComposePlan(DockerComposeApplyRequest{ProjectName: "test", Content: content}); err == nil {
 			t.Fatal("unsupported Compose accepted", content)
 		}

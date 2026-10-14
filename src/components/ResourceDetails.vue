@@ -6,6 +6,7 @@ import type { DockerContainer } from '../types';
 import { formatBytes } from '../format';
 import Dialog from './Dialog.vue';
 import JsonTree from './JsonTree.vue';
+import LoadingSkeleton from './LoadingSkeleton.vue';
 const props = defineProps<{ open: boolean; connectionId: string; kind: string; resourceId: string; readOnly: boolean }>();
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>();
 const data = ref<any>(), error = ref(''), busy = ref(false), containerId = ref('');
@@ -38,7 +39,8 @@ watch(() => [props.open, props.resourceId, props.kind, props.connectionId], () =
   <Dialog :open="open" content-class="dlg-wide automation-dialog" @update:open="emit('update:open', $event)">
     <div class="dlg-header"><div class="dlg-title">{{ local('资源详情', 'Resource details') }} · {{ kind }}</div><div class="dlg-desc break-all">{{ resourceId }}</div></div>
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
-    <div class="automation-scroll">
+    <LoadingSkeleton v-if="busy && !data" />
+    <div v-else class="automation-scroll">
       <p v-if="kind === 'images' && data?.details" class="hint-text">{{ data.details.Os }} / {{ data.details.Architecture }} · {{ data.details.Variant || '' }}<br />{{ (data.details.RepoDigests || []).join(', ') }}</p>
       <p v-if="kind === 'volumes'" class="hint-text">{{ data?.usageKnown ? local('容量由 Docker Engine 报告。', 'Size is reported by Docker Engine.') : local('Docker 未提供该卷容量；关联列表包含已停止容器。', 'Volume size is unavailable; references include stopped containers.') }}</p>
       <p v-if="kind === 'volumes' && data?.usageKnown"><strong>{{ formatBytes(data.details.UsageData.Size) }}</strong> · {{ local('引用数', 'References') }} {{ data.details.UsageData.RefCount }}</p>

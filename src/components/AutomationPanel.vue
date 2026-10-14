@@ -4,6 +4,8 @@ import { invoke } from '../bridge';
 import { getSettings, setSettings, local, type Settings, type Task } from '../automation';
 import Dialog from './Dialog.vue';
 import JsonTree from './JsonTree.vue';
+import Icon from './Icon.vue';
+import LoadingSkeleton from './LoadingSkeleton.vue';
 
 const props = defineProps<{ connectionId: string; name: string; readOnly: boolean; production: boolean }>();
 const open = ref(false), tab = ref('permissions'), busy = ref(false), error = ref('');
@@ -52,11 +54,12 @@ onUnmounted(() => window.removeEventListener('docker-task-started', showTasks));
 </script>
 
 <template>
-  <button class="btn btn-outline btn-sm automation-entry" :disabled="!connectionId" @click="open = true">AI/MCP {{ local('权限', 'permissions') }} · {{ status }}</button>
+  <button class="btn btn-outline btn-sm automation-entry" :disabled="!connectionId" @click="open = true"><Icon name="sparkles" />AI/MCP {{ local('权限', 'permissions') }} · {{ status }}</button>
   <Dialog :open="open" content-class="dlg-wide automation-dialog" @update:open="open = $event">
     <div class="dlg-header"><div class="dlg-title">{{ name || connectionId }} · AI/MCP</div><div class="dlg-desc">{{ production ? local('生产环境', 'Production') : local('当前连接', 'Current connection') }} · {{ readOnly ? local('只读', 'Read-only') : status }}</div></div>
     <div class="filter-group"><button class="filter-btn" :class="{ active: tab === 'permissions' }" @click="tab = 'permissions'">{{ local('权限', 'Permissions') }}</button><button class="filter-btn" :class="{ active: tab === 'tasks' }" @click="tab = 'tasks'">{{ local('任务与调用记录', 'Tasks & calls') }}</button></div>
     <p v-if="error || settings?.warning" role="alert" class="error-banner">{{ error || settings?.warning }}</p>
+    <LoadingSkeleton v-if="tab === 'permissions' && !settings && !error" :rows="5" :columns="2" />
     <div v-if="tab === 'permissions' && settings" class="automation-scroll">
       <p class="hint-text">{{ local('权限仅适用于当前连接，同时约束 DBX 内置 AI 和外部 MCP。DBX 自身的授权、白名单和只读限制仍然生效。', 'Permissions apply to this connection in both DBX AI and external MCP. DBX approval, allowlists and read-only restrictions still apply.') }}</p>
       <label class="check-label"><input v-model="enabled" type="checkbox" :disabled="busy || !!settings.warning" @change="toggleEnabled" />{{ local('启用 AI/MCP（首次开启仅查询）', 'Enable AI/MCP (queries only on first enable)') }}</label>

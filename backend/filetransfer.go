@@ -58,6 +58,7 @@ func (p *plugin) startFileDownload(sess *session, raw json.RawMessage, emitter *
 		ContainerID string `json:"containerId"`
 		Path        string `json:"path"`
 		SessionID   string `json:"sessionId"`
+		Archive     bool   `json:"archive"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil || in.ContainerID == "" || in.Path == "" {
 		return nil, errors.New("startFileDownload requires containerId and path")
@@ -67,6 +68,9 @@ func (p *plugin) startFileDownload(sess *session, raw json.RawMessage, emitter *
 	}
 	if _, err := validateContainerPath(in.Path); err != nil {
 		return nil, err
+	}
+	if in.Archive {
+		return p.startArchiveDownload(sess, in.ContainerID, in.Path, in.SessionID, emitter)
 	}
 
 	size, err := fileSize(sess, in.ContainerID, in.Path)
@@ -153,6 +157,52 @@ func (p *plugin) startFileDownload(sess *session, raw json.RawMessage, emitter *
 	}()
 
 	return map[string]any{"sessionId": in.SessionID, "size": size}, nil
+}
+
+// Directory downloads use Docker's archive API and do not need tar in the image.
+func (p *plugin) startArchiveDownload(sess *session, containerID, path, sessionID string, emitter *sdk.Emitter) (any, error) {
+	ctx, cancel := context.WithTimeout(sess.context(), 5*time.Minute)
+	body, _, err := sess.client.cli.CopyFromContainer(ctx, containerID, path)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	p.streams.add(&streamSession{sessionID: sessionID, connectionID: sess.conn.ID, kind: "download", cancel: cancel})
+	go func() {
+		defer cancel()
+		defer body.Close()
+		defer p.streams.remove(sessionID)
+		header := fileHeader{SessionID: sessionID, Path: path, Status: "running"}
+		buffer := make([]byte, 32*1024)
+		total := int64(0)
+		reader := io.LimitReader(body, maxFileTransferBytes+1)
+		for {
+			n, readErr := reader.Read(buffer)
+			total += int64(n)
+			if total > maxFileTransferBytes {
+				header.Status = "error"
+				header.Error = "Directory archive exceeds 256 MiB"
+				break
+			}
+			if n > 0 {
+				header.DataLen = n
+				emitFrame(emitter, channelFile, frameKindData, header, buffer[:n])
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					header.Status = "done"
+					header.Size = total
+				} else {
+					header.Status = "error"
+					header.Error = readErr.Error()
+				}
+				break
+			}
+		}
+		header.DataLen = 0
+		emitFrame(emitter, channelFile, frameKindJSON, header, nil)
+	}()
+	return map[string]any{"sessionId": sessionID, "size": 0}, nil
 }
 
 // startFileUpload 在容器内创建/覆盖文件，内容由前端经 docker-exec 通道写入 stdin。

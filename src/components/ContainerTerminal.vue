@@ -2,9 +2,11 @@
 // 容器内交互式终端：xterm.js + 后端 docker exec(Tty) 双向 binary channel。
 // 输入经 binary channel docker-exec 上行，输出经同一 channel 下行。
 // 主题直接读 DBX 注入的 --color-* token，随宿主明暗/配色切换实时更新。
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
+import { local } from '../automation';
 import '@xterm/xterm/css/xterm.css';
 import { t } from '../i18n';
 import { toast } from '../toast';
@@ -26,6 +28,15 @@ const host = ref<HTMLDivElement>();
 const command = ref('/bin/sh');
 const status = ref<'idle' | 'starting' | 'running' | 'closed' | 'error'>('idle');
 const error = ref('');
+const searchText = ref(''), searchFound = ref(true);
+const searchInput = ref<HTMLInputElement>();
+let search: SearchAddon | undefined;
+function find(previous = false) {
+  if (!searchText.value) { search?.clearDecorations(); searchFound.value = true; return; }
+  const options = { decorations: { matchBackground: '#b45309', matchBorder: '#fbbf24', matchOverviewRuler: '#fbbf24', activeMatchBackground: '#2563eb', activeMatchBorder: '#60a5fa', activeMatchColorOverviewRuler: '#60a5fa' } };
+  searchFound.value = (previous ? search?.findPrevious(searchText.value, options) : search?.findNext(searchText.value, options)) ?? false;
+}
+watch(searchText, () => find());
 const shellPresets = ['/bin/sh', '/bin/bash', '/bin/ash', '/bin/zsh'];
 
 let term: Terminal | undefined;
@@ -62,7 +73,7 @@ const ANSI_LIGHT = {
 
 function buildTheme(): ITheme {
   const appearance = document.documentElement.dataset.dbxTheme;
-  const dark = appearance ? appearance === 'dark' : !window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const dark = appearance ? appearance === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
   const palette = dark ? ANSI_DARK : ANSI_LIGHT;
   const background = readToken('--background', dark ? '#18181b' : '#ffffff');
   const foreground = readToken('--foreground', dark ? '#e4e4e7' : '#18181b');
@@ -190,15 +201,20 @@ onMounted(() => {
     convertEol: false,
     macOptionIsMeta: true,
     rightClickSelectsWord: true,
+    allowProposedApi: true,
+    drawBoldTextInBrightColors: true,
   });
   fit = new FitAddon();
   term.loadAddon(fit);
+  search = new SearchAddon({ highlightLimit: 500 });
+  term.loadAddon(search);
   applyTheme();
   term.open(host.value);
   applyTheme();
 
   // Ctrl+Shift+C 复制选中内容；普通 Ctrl+C 仍作为 SIGINT 发给容器。
   term.attachCustomKeyEventHandler((event) => {
+    if (event.type === 'keydown' && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { searchInput.value?.focus(); event.preventDefault(); return false; }
     if (event.type !== 'keydown' || !event.ctrlKey || !event.shiftKey) return true;
     if (event.key.toLowerCase() !== 'c') return true;
     const selection = term?.getSelection();
@@ -278,6 +294,14 @@ onUnmounted(() => {
       </button>
       <button class="btn btn-ghost btn-sm" @click="clearScreen">{{ t('clear') }}</button>
       <span class="terminal-status" :class="statusClass"><i class="terminal-status-dot" />{{ statusLabel }}</span>
+    </div>
+    <div class="terminal-search">
+      <Icon name="search" />
+      <input ref="searchInput" v-model="searchText" class="input" :placeholder="local('搜索并高亮终端内容', 'Search and highlight terminal output')" :aria-label="local('终端搜索', 'Terminal search')" @keydown.enter.prevent="find($event.shiftKey)" @keydown.esc="searchText = ''; term?.focus()" />
+      <button class="icon-btn" :title="local('上一个', 'Previous')" :disabled="!searchText" @click="find(true)"><Icon name="arrow-left" /></button>
+      <button class="icon-btn" :title="local('下一个', 'Next')" :disabled="!searchText" @click="find()"><Icon name="chevron-right" /></button>
+      <button v-if="searchText" class="icon-btn" :title="local('清除搜索', 'Clear search')" :aria-label="local('清除搜索', 'Clear search')" @click="searchText = ''"><Icon name="x" /></button>
+      <span v-if="!searchFound" class="hint-text">{{ local('无匹配', 'No matches') }}</span>
     </div>
     <div v-if="error" class="error-text terminal-error">{{ error }}</div>
     <div class="terminal-stage">

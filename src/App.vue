@@ -46,6 +46,9 @@ import ConfirmDialog from './components/ConfirmDialog.vue';
 import ContainerTerminal from './components/ContainerTerminal.vue';
 import AutomationPanel from './components/AutomationPanel.vue';
 import ResourceDetails from './components/ResourceDetails.vue';
+import LoadingSkeleton from './components/LoadingSkeleton.vue';
+import FileContextMenu from './components/FileContextMenu.vue';
+import { composeFromInspects } from './compose';
 import { local, recommendations, mutationPreview, mutationExecute, type MutationPreview, type Task } from './automation';
 import { invoke } from './bridge';
 
@@ -85,6 +88,7 @@ const selectedContainerId = ref('');
 const selectedRowKey = ref('');
 const detailTab = ref<DetailTab>('overview');
 const inspect = ref<Record<string, any>>({});
+const detailLoading = ref(false);
 const trend = ref<TrendPoint[]>([]);
 const actionInFlight = ref<Record<string, string | undefined>>({});
 const imageActionInFlight = ref<Record<string, string | undefined>>({});
@@ -132,6 +136,7 @@ let dangerResolve: ((confirmed: boolean) => void) | undefined;
 const createContainerOpen = ref(false);
 const createMode = ref<'form' | 'compose'>('form');
 const composeEditingProject = ref('');
+const composeLoading = ref(false), composeError = ref('');
 const composeDraft = ref({
   projectName: '',
   content: `services:
@@ -204,6 +209,10 @@ const filePath = ref('/');
 const fileEntries = ref<DockerFileEntry[]>([]);
 const filePreview = ref<DockerFilePreview>();
 const fileLoading = ref(false);
+const filePreviewLoading = ref(false);
+const fileMenu = ref({ open: false, x: 0, y: 0, entry: undefined as DockerFileEntry | undefined });
+const fileEdit = ref({ open: false, operation: '', path: '', name: '', busy: false, error: '' });
+const fileEditTitle = computed(() => ({ mkdir: local('新建文件夹', 'New folder'), create: local('新建文件', 'New file'), rename: local('重命名', 'Rename') }[fileEdit.value.operation] || ''));
 const fileError = ref('');
 const fileSelection = ref('');
 const uploadInput = ref<HTMLInputElement>();
@@ -743,8 +752,12 @@ async function loadContainers() {
   for (const [project] of composeGroups.value) expandedProjects.value.add(project);
 }
 
+let resourceLoadSequence = 0;
+let loadingResource: ResourceKind | undefined;
 async function loadResource(kind = resource.value) {
-  if (refreshInFlight.value) return;
+  if (refreshInFlight.value && loadingResource === kind) return;
+  const request = ++resourceLoadSequence;
+  loadingResource = kind;
   refreshInFlight.value = true;
   loading.value = true;
   error.value = '';
@@ -760,8 +773,7 @@ async function loadResource(kind = resource.value) {
   } catch (cause: any) {
     error.value = cause?.message || String(cause);
   } finally {
-    loading.value = false;
-    refreshInFlight.value = false;
+    if (request === resourceLoadSequence) { loading.value = false; refreshInFlight.value = false; loadingResource = undefined; }
   }
 }
 
@@ -788,12 +800,22 @@ async function openDetail(container: DockerContainer) {
   fileSelection.value = '';
   fileTransfers.value = [];
   filePath.value = '/';
-  inspect.value = (await api.inspectContainer(connectionId.value, container.id)) as Record<string, any>;
+  inspect.value = {};
+  detailLoading.value = true;
+  try {
+    const result = await api.inspectContainer(connectionId.value, container.id);
+    if (selectedContainerId.value !== container.id) return;
+    inspect.value = result as Record<string, any>;
+  } catch (e) { toast(String(e), 5000); }
+  finally { if (selectedContainerId.value === container.id) detailLoading.value = false; }
   trend.value = [];
   restartDetailSampling();
 }
 
 async function closeDetail() {
+  ++fileLoadSequence; ++filePreviewSequence;
+  fileLoading.value = false; filePreviewLoading.value = false;
+  fileMenu.value.open = false; fileEdit.value.open = false;
   stopDetailSampling();
   await stopLogs();
   selectedContainerId.value = '';
@@ -961,56 +983,26 @@ async function openCreateContainer() {
   createContainerOpen.value = true;
 }
 
-function composePortLines(value: any): string[] {
-  const bindings = value?.HostConfig?.PortBindings ?? {};
-  return Object.entries(bindings).flatMap(([containerPort, entries]: [string, any]) => {
-    const [port, protocol = 'tcp'] = containerPort.split('/');
-    if (!Array.isArray(entries) || !entries.length) return [`${port}/${protocol}`];
-    return entries.map((entry) => {
-      const host = [entry.HostIp, entry.HostPort].filter(Boolean).join(':');
-      return `${host ? `${host}:` : ''}${port}/${protocol}`;
-    });
-  });
-}
-
 async function openComposeEditor(project = '') {
   createMode.value = 'compose';
   composeEditingProject.value = project;
   composeDraft.value.projectName = project;
-  if (project) {
-    const projectContainers = containers.value.filter((container) => container.labels['com.docker.compose.project'] === project);
-    const services: Record<string, any> = {};
-    for (const container of projectContainers) {
-      const value: any = await api.inspectContainer(connectionId.value, container.id);
-      const service = container.labels['com.docker.compose.service'] || containerName(container);
-      const mounts = (value.Mounts ?? []).map((mount: any) => `${mount.Name || mount.Source}:${mount.Destination}${mount.RW === false ? ':ro' : ''}`);
-      const networkNames = Object.keys(value.NetworkSettings?.Networks ?? {}).map((name) => (name.startsWith(`${project}_`) ? name.slice(project.length + 1) : name));
-      services[service] = {
-        image: value.Config?.Image || container.image,
-        container_name: value.Name?.replace(/^\//, '') || containerName(container),
-        ...(value.Config?.Cmd?.length ? { command: value.Config.Cmd } : {}),
-        ...(value.Config?.Env?.length ? { environment: value.Config.Env } : {}),
-        ...(composePortLines(value).length ? { ports: composePortLines(value) } : {}),
-        ...(mounts.length ? { volumes: mounts } : {}),
-        ...(networkNames.length ? { networks: networkNames } : {}),
-        ...(value.HostConfig?.RestartPolicy?.Name && value.HostConfig.RestartPolicy.Name !== 'no' ? { restart: value.HostConfig.RestartPolicy.Name } : {}),
-      };
-    }
-    composeDraft.value.content = JSON.stringify({ services }, null, 2);
-  } else {
-    composeDraft.value = {
-      projectName: '',
-      content: `services:
-  app:
-    image: nginx:latest
-    ports:
-      - "8080:80"
-`,
-    };
-  }
   createContainerOpen.value = true;
+  composeError.value = '';
+  composeLoading.value = true;
+  composeDraft.value.content = '';
+  try {
+    if (project) {
+      const projectContainers = containers.value.filter(c => c.labels['com.docker.compose.project'] === project);
+      const values = [];
+      for (const container of projectContainers) values.push(await api.inspectContainer(connectionId.value, container.id) as Record<string, any>);
+      composeDraft.value.content = composeFromInspects(values);
+    } else {
+      composeDraft.value.content = 'services:\n  app:\n    image: nginx:latest\n    ports:\n      - "8080:80"\n';
+    }
+  } catch (e) { composeError.value = String(e); }
+  finally { composeLoading.value = false; }
 }
-
 async function applyCompose() {
   const editing = !!composeEditingProject.value;
   submitting.value = true;
@@ -1371,16 +1363,23 @@ function clearLogs() {
 
 async function loadFiles(path = filePath.value) {
   if (!selectedContainer.value) return;
+  const containerId = selectedContainer.value.id;
+  const request = ++fileLoadSequence;
+  ++filePreviewSequence;
+  filePreviewLoading.value = false;
   fileLoading.value = true;
   fileError.value = '';
   filePreview.value = undefined;
   try {
     filePath.value = path;
-    fileEntries.value = await api.listContainerFiles(connectionId.value, selectedContainer.value.id, path);
+    fileEntries.value = [];
+    fileSelection.value = '';
+    const entries = await api.listContainerFiles(connectionId.value, containerId, path);
+    if (request === fileLoadSequence && selectedContainerId.value === containerId) fileEntries.value = entries;
   } catch (cause: any) {
-    fileError.value = cause?.message || String(cause);
+    if (request === fileLoadSequence && selectedContainerId.value === containerId) fileError.value = cause?.message || String(cause);
   } finally {
-    fileLoading.value = false;
+    if (request === fileLoadSequence) fileLoading.value = false;
   }
 }
 
@@ -1396,14 +1395,56 @@ async function openFile(entry: DockerFileEntry) {
     await loadFiles(entry.path);
     return;
   }
-  fileLoading.value = true;
+  const request = ++filePreviewSequence;
+  const containerId = selectedContainer.value.id;
+  filePreviewLoading.value = true;
+  fileError.value = '';
+  fileSelection.value = entry.path;
   try {
-    filePreview.value = await api.previewContainerFile(connectionId.value, selectedContainer.value.id, entry.path);
+    const preview = await api.previewContainerFile(connectionId.value, containerId, entry.path);
+    if (request === filePreviewSequence && selectedContainerId.value === containerId) filePreview.value = preview;
   } catch (cause: any) {
-    fileError.value = cause?.message || String(cause);
+    if (request === filePreviewSequence && selectedContainerId.value === containerId) fileError.value = cause?.message || String(cause);
   } finally {
-    fileLoading.value = false;
+    if (request === filePreviewSequence) filePreviewLoading.value = false;
   }
+}
+
+let fileLoadSequence = 0, filePreviewSequence = 0;
+function openFileMenu(event: MouseEvent | KeyboardEvent, entry?: DockerFileEntry) {
+  if (fileLoading.value) return;
+  fileSelection.value = entry?.path || '';
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  fileMenu.value = { open: true, x: 'clientX' in event ? event.clientX : rect.left + 24, y: 'clientY' in event ? event.clientY : rect.top + 24, entry };
+}
+async function fileMenuAction(action: string) {
+  const entry = fileMenu.value.entry;
+  fileMenu.value.open = false;
+  if (action === 'open' && entry) return openFile(entry);
+  if (action === 'download' && entry) return downloadFile(entry);
+  if (action === 'copy') return copyValue(entry?.path || filePath.value);
+  if (action === 'refresh') return loadFiles();
+  if (isReadOnly.value) return;
+  if (action === 'upload') return triggerUpload();
+  if (action === 'delete' && entry && selectedContainer.value) {
+    const containerId = selectedContainer.value.id;
+    if (!await requestConfirmation(local(`删除 ${entry.path}${entry.kind === 'directory' ? ' 及其全部内容' : ''}？此操作无法撤销。`, `Delete ${entry.path}${entry.kind === 'directory' ? ' and all its contents' : ''}? This cannot be undone.`))) return;
+    if (containerId !== selectedContainerId.value) return;
+    try { await invoke(connectionId.value, 'docker/fileOperation', { containerId, operation: action, path: entry.path }); await loadFiles(); }
+    catch (e) { toast(String(e), 5000); }
+    return;
+  }
+  if (['mkdir', 'create', 'rename'].includes(action)) fileEdit.value = { open: true, operation: action, path: action === 'rename' ? entry!.path : filePath.value, name: action === 'rename' ? entry!.name : '', busy: false, error: '' };
+}
+async function saveFileEdit() {
+  if (isReadOnly.value || !selectedContainer.value || fileEdit.value.busy) return;
+  const draft = fileEdit.value;
+  if (!draft.name || draft.name === '.' || draft.name === '..' || /[\/\0\r\n]/.test(draft.name)) { draft.error = local('请输入有效名称，不能包含斜杠或换行。', 'Enter a valid name without slashes or newlines.'); return; }
+  draft.busy = true; draft.error = '';
+  try {
+    await invoke(connectionId.value, 'docker/fileOperation', { containerId: selectedContainer.value.id, operation: draft.operation, path: draft.operation === 'rename' ? draft.path : joinContainerPath(draft.path, draft.name), name: draft.name });
+    draft.open = false; await loadFiles();
+  } catch (e) { draft.error = String(e); } finally { draft.busy = false; }
 }
 
 // ---------- 容器文件传输 ----------
@@ -1433,21 +1474,23 @@ function fileTransferPercent(task: FileTransferTask): number {
 }
 
 async function downloadFile(entry: DockerFileEntry) {
-  if (!selectedContainer.value || entry.kind === 'directory') return;
+  if (!selectedContainer.value) return;
+  const archive = entry.kind === 'directory';
+  const fileName = archive ? `${entry.name}.tar` : entry.name;
   const sessionId = newSessionId();
   const chunks: Uint8Array[] = [];
   upsertFileTransfer({
     sessionId,
-    name: entry.name,
+    name: fileName,
     path: entry.path,
     direction: 'download',
     status: 'running',
     bytes: 0,
-    total: entry.size,
+    total: archive ? 0 : entry.size,
   });
   registerFileStream(sessionId, (event) => {
     if (event.chunk.length) chunks.push(event.chunk);
-    patchFileTransfer(sessionId, { bytes: event.bytesReceived, total: event.size || entry.size });
+    patchFileTransfer(sessionId, { bytes: event.bytesReceived, total: event.size || (archive ? 0 : entry.size) });
     if (!event.done) return;
     if (event.error) {
       unregisterStream(sessionId);
@@ -1455,10 +1498,10 @@ async function downloadFile(entry: DockerFileEntry) {
       toast(event.error, 5000);
       return;
     }
-    void saveDownloadedFile(sessionId, entry.name, chunks);
+    void saveDownloadedFile(sessionId, fileName, chunks);
   });
   try {
-    await api.startFileDownload(connectionId.value, selectedContainer.value.id, entry.path, sessionId);
+    await api.startFileDownload(connectionId.value, selectedContainer.value.id, entry.path, sessionId, archive);
   } catch (cause: any) {
     unregisterStream(sessionId);
     patchFileTransfer(sessionId, { status: 'error', error: cause?.message || String(cause) });
@@ -1803,7 +1846,8 @@ onUnmounted(() => settleMutation(false));
           </button>
         </div>
         <div class="detail-body">
-          <div v-if="detailTab === 'overview'" class="detail-overview">
+          <LoadingSkeleton v-if="detailTab === 'overview' && detailLoading" :rows="8" :columns="2" />
+          <div v-else-if="detailTab === 'overview'" class="detail-overview">
             <section class="overview-grid">
               <div class="docker-card">
                 <span>{{ t('fullId') }}</span>
@@ -1933,7 +1977,9 @@ onUnmounted(() => settleMutation(false));
                 <button class="btn btn-ghost btn-sm" :disabled="fileLoading" @click="loadFiles()"><Icon name="refresh-cw" :class="{ spin: fileLoading }" /></button>
               </div>
               <div v-if="fileError" class="error-text files-error">{{ fileError }}</div>
-              <div v-else class="files-scroll">
+              <LoadingSkeleton v-else-if="fileLoading" :columns="2" />
+              <div v-else class="files-scroll" @contextmenu.prevent="openFileMenu($event)">
+                <div v-if="!fileEntries.length" class="file-preview-empty">{{ local('空文件夹 · 右键新建或上传', 'Empty folder · right-click to create or upload') }}</div>
                 <div
                   v-for="entry in fileEntries"
                   :key="entry.path"
@@ -1941,6 +1987,10 @@ onUnmounted(() => settleMutation(false));
                   :class="{ 'row-selected': fileSelection === entry.path }"
                   @click="fileSelection = entry.path"
                   @dblclick="openFile(entry)"
+                  tabindex="0"
+                  @contextmenu.prevent.stop="openFileMenu($event, entry)"
+                  @keydown.enter="openFile(entry)"
+                  @keydown.shift.f10.prevent="openFileMenu($event, entry)"
                 >
                   <Icon v-if="entry.kind === 'directory'" name="folder" class="file-icon-folder" />
                   <Icon v-else name="file" class="file-icon-file" />
@@ -1971,7 +2021,8 @@ onUnmounted(() => settleMutation(false));
               </div>
             </div>
             <div class="file-preview">
-              <div v-if="filePreview?.binary" class="muted-text">{{ t('binaryPreviewUnsupported') }}</div>
+              <LoadingSkeleton v-if="filePreviewLoading" :rows="10" :columns="1" />
+              <div v-else-if="filePreview?.binary" class="muted-text">{{ t('binaryPreviewUnsupported') }}</div>
               <pre v-else-if="filePreview" class="file-preview-content">{{ filePreview.content }}<template v-if="filePreview.truncated">…</template></pre>
               <div v-else class="file-preview-empty">{{ t('selectFile') }}</div>
             </div>
@@ -1983,7 +2034,8 @@ onUnmounted(() => settleMutation(false));
         <div class="toolbar">
           <div class="search-box">
             <Icon name="search" class="search-icon" />
-            <input v-model="query" class="input search-input" :placeholder="t('search')" />
+            <input v-model="query" class="input search-input search-clearable" :placeholder="t('search')" @keydown.esc="query = ''" />
+            <button v-if="query" class="icon-btn search-clear" :title="local('清除搜索', 'Clear search')" :aria-label="local('清除搜索', 'Clear search')" @click="query = ''"><Icon name="x" /></button>
           </div>
           <template v-if="resource === 'containers'">
             <button class="btn btn-primary" :disabled="isReadOnly" @click="openCreateContainer"><Icon name="plus" />{{ t('createContainer') }}</button>
@@ -2005,8 +2057,9 @@ onUnmounted(() => settleMutation(false));
           <button class="btn btn-ghost" :class="{ 'ml-auto': resource !== 'containers' }" :disabled="loading" @click="loadResource()"><Icon name="refresh-cw" :class="{ spin: loading }" />{{ t('refresh') }}</button>
         </div>
 
-        <div class="table-area">
-          <table v-if="resource === 'containers'" class="docker-table" :style="tableStyle('containers')">
+        <div class="table-area" :aria-busy="loading">
+          <LoadingSkeleton v-if="loading && !(resource === 'containers' ? containers : resource === 'images' ? images : resource === 'volumes' ? volumes : networks).length" :rows="10" :columns="columnWidths[resource].length" />
+          <table v-else-if="resource === 'containers'" class="docker-table" :style="tableStyle('containers')">
             <colgroup>
               <col v-for="(width, index) in columnWidths.containers" :key="index" :style="{ width: `${width}px` }" />
             </colgroup>
@@ -2037,7 +2090,7 @@ onUnmounted(() => settleMutation(false));
                     </div>
                   </td>
                 </tr>
-                <tr v-for="container in expandedProjects.has(project) ? values : []" :key="container.id" :class="{ 'row-selected': selectedRowKey === container.id }" @click="selectedRowKey = container.id">
+                <tr v-for="container in expandedProjects.has(project) ? values : []" :key="container.id" class="compose-child" :class="{ 'row-selected': selectedRowKey === container.id }" @click="selectedRowKey = container.id">
                   <td>
                     <div class="docker-copy-cell cell-indent">
                       <span class="status-dot" :class="isRunning(container) ? 'dot-running' : isPaused(container) ? 'dot-paused' : 'dot-stopped'" /><button class="link-btn" @click="openDetail(container)">{{ containerName(container) }}</button
@@ -2227,9 +2280,18 @@ onUnmounted(() => settleMutation(false));
       <div class="dlg-footer"><button class="btn btn-outline" @click="settleMutation(false)">{{ t('cancel') }}</button><button class="btn btn-danger" @click="settleMutation(true)">{{ local('确认执行', 'Confirm execution') }}</button></div>
     </Dialog>
     <ResourceDetails v-model:open="resourceDetailsOpen" :connection-id="connectionId" :kind="resourceDetailsKind" :resource-id="resourceDetailsId" :read-only="isReadOnly" @changed="loadResource(resource)" />
+    <FileContextMenu :open="fileMenu.open" :x="fileMenu.x" :y="fileMenu.y" :entry="fileMenu.entry" :read-only="isReadOnly" @close="fileMenu.open = false" @action="fileMenuAction" />
+    <Dialog :open="fileEdit.open" @update:open="!fileEdit.busy && (fileEdit.open = $event)">
+      <div class="dlg-header"><div class="dlg-title">{{ fileEditTitle }}</div><div class="dlg-desc break-all">{{ fileEdit.path }}</div></div>
+      <form @submit.prevent="saveFileEdit">
+        <label class="docker-field"><span>{{ t('name') }}</span><input v-model="fileEdit.name" class="input" autofocus :disabled="fileEdit.busy" /></label>
+        <p v-if="fileEdit.error" class="error-text" role="alert">{{ fileEdit.error }}</p>
+        <div class="dlg-footer"><button type="button" class="btn btn-outline" :disabled="fileEdit.busy" @click="fileEdit.open = false">{{ t('cancel') }}</button><button class="btn btn-primary" :disabled="fileEdit.busy || !fileEdit.name || isReadOnly">{{ local('确定', 'Confirm') }}</button></div>
+      </form>
+    </Dialog>
     <Dialog :open="createContainerOpen" content-class="dlg-wide" @update:open="createContainerOpen = $event">
       <div class="dlg-header">
-        <div class="dlg-title">{{ t('createContainer') }}</div>
+        <div class="dlg-title">{{ composeEditingProject ? t('editCompose') : t('createContainer') }}</div>
         <div class="dlg-desc">{{ t('createContainerDescription') }}</div>
       </div>
       <div class="filter-group">
@@ -2262,8 +2324,11 @@ onUnmounted(() => settleMutation(false));
         <label class="check-label"><input v-model="createContainerDraft.start" type="checkbox" />{{ t('startAfterCreate') }}</label>
       </div>
       <div v-else class="stack">
+        <LoadingSkeleton v-if="composeLoading" :rows="8" :columns="1" />
+        <p v-if="composeError" class="error-text" role="alert">{{ composeError }}</p>
         <label class="docker-field"><span>{{ t('composeProject') }}</span><input v-model="composeDraft.projectName" class="input" :disabled="!!composeEditingProject" placeholder="my-project" /></label>
-        <label class="docker-field"><span>compose.yaml</span><textarea v-model="composeDraft.content" rows="20" class="docker-textarea compose-editor" spellcheck="false" /></label>
+        <label v-if="!composeLoading" class="docker-field"><span>compose.yaml</span><textarea v-model="composeDraft.content" rows="20" class="docker-textarea compose-editor" spellcheck="false" /></label>
+        <p v-if="composeEditingProject" class="hint-text">{{ local('根据当前容器配置生成 YAML，原文件的注释与变量不可恢复。保存前请检查；不支持的配置会在预览时提示。', 'YAML is generated from current containers; original comments and variables are unavailable. Review before saving; unsupported settings are rejected during preview.') }}</p>
         <p class="hint-text">{{ t('composeSubsetHint') }}</p>
       </div>
       <div class="dlg-footer">
@@ -2271,7 +2336,7 @@ onUnmounted(() => settleMutation(false));
         <button v-if="createMode === 'form'" class="btn btn-primary" :disabled="submitting || !createContainerDraft.name.trim() || !createContainerDraft.image.trim()" @click="createContainer">
           <Icon v-if="submitting" name="loader-circle" class="spin" />{{ t('create') }}
         </button>
-        <button v-else class="btn btn-primary" :disabled="submitting || !composeDraft.projectName.trim() || !composeDraft.content.trim()" @click="applyCompose">
+        <button v-else class="btn btn-primary" :disabled="submitting || composeLoading || !!composeError || !composeDraft.projectName.trim() || !composeDraft.content.trim()" @click="applyCompose">
           <Icon v-if="submitting" name="loader-circle" class="spin" />{{ composeEditingProject ? t('saveCompose') : t('create') }}
         </button>
       </div>
@@ -2316,7 +2381,7 @@ onUnmounted(() => settleMutation(false));
       </div>
     </Dialog>
 
-    <Dialog :open="engineJsonOpen" content-class="dlg-xwide" @update:open="engineJsonOpen = $event">
+    <Dialog :open="engineJsonOpen" dismissible content-class="dlg-xwide" @update:open="engineJsonOpen = $event">
       <div class="dlg-header">
         <div class="dlg-title">{{ t('engineJson') }}</div>
         <div class="dlg-desc">{{ t('engineJsonReadonlyHint') }}</div>
@@ -2329,17 +2394,17 @@ onUnmounted(() => settleMutation(false));
         <button class="btn btn-outline btn-sm" @click="copyValue(JSON.stringify(engineJson, null, 2))"><Icon name="copy" />{{ t('copy') }}</button>
       </div>
       <div class="engine-json-area">
-        <div v-if="engineDetailsLoading" class="center-box"><Icon name="loader-circle" class="spin" /></div>
+        <LoadingSkeleton v-if="engineDetailsLoading" :rows="8" :columns="2" />
         <pre v-else-if="engineJsonSearch" class="mono-xs wrap-all">{{ filteredEngineJson }}</pre>
         <JsonTree v-else :value="engineJson" :initial-expanded-depth="2" />
       </div>
     </Dialog>
 
-    <Dialog :open="engineSummaryOpen" content-class="dlg-medium" @update:open="engineSummaryOpen = $event">
+    <Dialog :open="engineSummaryOpen" dismissible content-class="dlg-medium" @update:open="engineSummaryOpen = $event">
       <div class="dlg-header">
         <div class="dlg-title">{{ t('engineInformation') }}</div>
       </div>
-      <div v-if="engineDetailsLoading" class="center-box"><Icon name="loader-circle" class="spin" /></div>
+      <LoadingSkeleton v-if="engineDetailsLoading" :rows="8" :columns="2" />
       <div v-else-if="engineDetails" class="summary-grid">
         <div
           v-for="[label, value] in [
@@ -2448,7 +2513,7 @@ onUnmounted(() => settleMutation(false));
         <div class="dlg-title">{{ t('imageHistory') }}</div>
         <div class="dlg-desc">{{ historyImage }} · {{ t('imageHistoryDescription') }}</div>
       </div>
-      <div v-if="historyLoading" class="muted-text">{{ t('waitingForLogs') }}</div>
+      <LoadingSkeleton v-if="historyLoading" :columns="3" />
       <div v-else-if="historyError" class="error-text">{{ historyError }}</div>
       <div v-else-if="!historyLayers.length" class="muted-text">{{ t('imageHistoryEmpty') }}</div>
       <div v-else class="layers-list">
@@ -2469,7 +2534,7 @@ onUnmounted(() => settleMutation(false));
       </div>
     </Dialog>
 
-    <Dialog :open="diskUsageOpen" content-class="dlg-wide" @update:open="diskUsageOpen = $event">
+    <Dialog :open="diskUsageOpen" dismissible content-class="dlg-wide" @update:open="diskUsageOpen = $event">
       <div class="dlg-header">
         <div class="dlg-title">{{ t('diskUsage') }}</div>
         <div class="dlg-desc">{{ t('diskUsageDescription') }}</div>
@@ -2477,7 +2542,7 @@ onUnmounted(() => settleMutation(false));
 
       <div class="disk-dialog">
         <div v-if="diskUsageError" class="error-text">{{ diskUsageError }}</div>
-        <div v-else-if="diskUsageLoading && !diskUsage" class="muted-text">{{ t('waitingForLogs') }}</div>
+        <LoadingSkeleton v-else-if="diskUsageLoading && !diskUsage" :rows="4" :columns="4" />
         <table v-else-if="diskUsage" class="disk-table">
           <thead>
             <tr>

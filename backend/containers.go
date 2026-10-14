@@ -363,8 +363,12 @@ func prepareCreateContainer(req DockerCreateContainerRequest) (*container.Config
 	}
 
 	config := &container.Config{
-		Image:  image,
-		Labels: req.Labels,
+		Image:       image,
+		Labels:      req.Labels,
+		Entrypoint:  req.Entrypoint,
+		User:        req.User,
+		WorkingDir:  req.WorkingDir,
+		Healthcheck: req.Healthcheck,
 	}
 	if len(req.Command) > 0 {
 		config.Cmd = strslice.StrSlice(req.Command)
@@ -393,10 +397,10 @@ func prepareCreateContainer(req DockerCreateContainerRequest) (*container.Config
 		if pb.HostPort != nil {
 			hostPort = fmt.Sprintf("%d", *pb.HostPort)
 		}
-		portBindings[portKey] = []nat.PortBinding{{
+		portBindings[portKey] = append(portBindings[portKey], nat.PortBinding{
 			HostIP:   strings.TrimSpace(pb.HostIP),
 			HostPort: hostPort,
-		}}
+		})
 	}
 	if len(exposedPorts) > 0 {
 		config.ExposedPorts = exposedPorts
@@ -435,7 +439,10 @@ func prepareCreateContainer(req DockerCreateContainerRequest) (*container.Config
 	default:
 		return nil, nil, nil, "", fmt.Errorf("Unsupported restart policy: %s", req.RestartPolicy)
 	}
-	hostConfig.RestartPolicy = container.RestartPolicy{Name: restartMode}
+	if req.RestartRetries < 0 || (req.RestartRetries > 0 && restart != "on-failure") {
+		return nil, nil, nil, "", errors.New("Invalid restart retry count")
+	}
+	hostConfig.RestartPolicy = container.RestartPolicy{Name: restartMode, MaximumRetryCount: req.RestartRetries}
 
 	var networkingConfig *network.NetworkingConfig
 	if strings.TrimSpace(req.Network) != "" {
@@ -443,8 +450,12 @@ func prepareCreateContainer(req DockerCreateContainerRequest) (*container.Config
 		if err != nil {
 			return nil, nil, nil, "", err
 		}
-		networkingConfig = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{networkName: {}},
+		if networkName == "host" || networkName == "none" {
+			hostConfig.NetworkMode = container.NetworkMode(networkName)
+		} else {
+			networkingConfig = &network.NetworkingConfig{
+				EndpointsConfig: map[string]*network.EndpointSettings{networkName: {}},
+			}
 		}
 	}
 	return config, hostConfig, networkingConfig, name, nil

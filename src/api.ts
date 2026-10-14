@@ -118,8 +118,8 @@ export function previewContainerFile(connectionId: string, containerId: string, 
   return invoke<DockerFilePreview>(connectionId, 'docker/previewContainerFile', { containerId, path });
 }
 
-export function startFileDownload(connectionId: string, containerId: string, path: string, sessionId: string) {
-  return invoke<{ sessionId: string; size: number }>(connectionId, 'docker/startFileDownload', { containerId, path, sessionId });
+export function startFileDownload(connectionId: string, containerId: string, path: string, sessionId: string, archive = false) {
+  return invoke<{ sessionId: string; size: number }>(connectionId, 'docker/startFileDownload', { containerId, path, sessionId, archive });
 }
 
 export function startFileUpload(
