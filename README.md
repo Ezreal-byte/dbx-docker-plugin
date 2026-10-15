@@ -19,6 +19,7 @@ The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the
 - Merge PR #1 while preserving the 0.3.0 connection forms, AI/MCP permissions and destructive-operation checks.
 - Add an optional **Local (OS default socket)** connection: Windows uses `//./pipe/docker_engine`; macOS/Linux use `/var/run/docker.sock`. Use an explicit socket mode for custom paths.
 - Accept native Windows named-pipe paths alongside URL-style paths. Keep strict SSH host key verification and HTTP as the existing connection default.
+- Fix SSH `nc` session exhaustion ([#2](https://github.com/Ezreal-byte/dbx-docker-plugin/issues/2)): bound both HTTP and raw stream connections, expire idle sessions, support cancellation while queued, and retry only rejected session opens before any Docker request is sent.
 - Cover default socket selection, native pipe connections, changed SSH host keys and localized connection forms with regression checks; Linux CI exercises a real Docker daemon through the local socket.
 - [完整更新日志（中文）](CHANGELOG.md)
 
@@ -67,6 +68,14 @@ The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the
 - SSH `nc` connections verify the server key against `~/.ssh/known_hosts` by default. Set **SSH known_hosts path** if the trusted file is elsewhere. The handshake tries host key types in OpenSSH's order (ed25519, then RSA, then ECDSA), so an entry written by `ssh` or `ssh-keyscan` matches even when the server also offers other key types. A verification failure names the file and the `ssh-keyscan` command that refreshes it.
 - Read-only connections reject Docker write operations, container terminals, and container file uploads in the Go backend.
 - Every RPC handler is wrapped in a panic guard, so a failure inside one method returns an RPC error instead of taking the whole sidecar (and the open workbench) down.
+
+### SSH socket session limits
+
+The SSH socket methods require a remote `nc` that supports `-U`; sudo mode also requires passwordless `sudo -n`. Each Docker connection through `nc` occupies an SSH session, including terminal and file-transfer streams. OpenSSH normally allows 10 sessions per SSH connection (`MaxSessions`).
+
+Version 0.3.1 limits the bridge to **8 total sessions** and the HTTP pool to **6 connections**, retaining at most **2 idle connections for 10 seconds**. Excess requests wait for a slot, honor cancellation, and time out after at most 15 seconds while dialing. Close unused terminals or streams if they occupy the quota. A temporary SSH channel rejection is retried up to three times with backoff, before running `nc` or sending a Docker request. Existing streams stay connected and Docker write operations are never replayed by this retry mechanism.
+
+The default OpenSSH session quota does not need to be raised for ordinary page loading and polling. If the server uses a lower limit, persistent rejection reports `MaxSessions`; check the effective server setting and close unused streams. Reconnect after a server-side configuration change. Host key verification remains required.
 
 ## DBX tunnel reuse
 

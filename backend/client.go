@@ -222,6 +222,14 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 
 	if dialContext != nil || tlsCfg != nil {
 		transport := &http.Transport{TLSClientConfig: tlsCfg, DialContext: dialContext}
+		if cfg.Protocol == "unix-over-nc" || cfg.Protocol == "unix-over-nc-sudo" {
+			// Ordinary API traffic queues before consuming every SSH slot.
+			// Raw exec/file streams share the bridge's overall session budget.
+			transport.MaxConnsPerHost = 6
+			transport.MaxIdleConns = 2
+			transport.MaxIdleConnsPerHost = 2
+			transport.IdleConnTimeout = 10 * time.Second
+		}
 		opts = append(opts, client.WithHTTPClient(&http.Client{Transport: transport}))
 	}
 

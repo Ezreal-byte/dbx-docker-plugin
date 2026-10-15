@@ -36,6 +36,9 @@ jobs:
       - run: npm test
       - run: go -C backend test ./...
       - run: go -C backend/sdk test ./...
+      - name: SSH session concurrency (race detector)
+        if: runner.os == 'Linux'
+        run: go -C backend test -race -run '^TestSSHNC' -count=1 -timeout 60s ./...
       - run: npm run build
       - name: Docker mutation safety (disposable container)
         if: runner.os == 'Linux'

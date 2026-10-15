@@ -2,6 +2,9 @@
 
 ## 0.3.1 · 2026-10-15
 
+- 修复 issue #2：SSH `nc` / sudo `nc` 模式统一限制最多 8 个 session，覆盖 HTTP、终端和文件传输；HTTP 最多 6 条连接、2 条空闲连接，空闲 10 秒后释放，避免并发页面与轮询耗尽 sshd 默认配额。
+- 超额拨号排队等待，支持取消、15 秒超时和断开连接时释放；仅在 Docker 请求发出前对 SSH session 暂时拒绝进行最多三次退避重试，持续拒绝时提示检查 `MaxSessions`。
+- 增加带 SSH session 配额的真实 SSH 传输测试，覆盖两种 nc 模式、60 个并发查询与常驻流、取消排队、配额释放和有限重试；保留 SSH 表单隐藏端口的默认值 2375。
 - 合并 PR #1，重复的条件表单、连接默认值及 SSH 校验提示保留 0.3.0 实现。
 - 新增可选的“本机（系统默认）”连接方式：Windows 使用 `//./pipe/docker_engine`，macOS/Linux 使用 `/var/run/docker.sock`；隐藏的旧路径不会覆盖系统默认路径。自定义端点仍使用明确的 Unix Socket / Windows 命名管道方式。
 - Windows 命名管道同时接受 `//./pipe/<name>` 与 `\\.\pipe\<name>` 写法，继续拒绝远程管道和非法路径。

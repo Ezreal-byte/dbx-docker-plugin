@@ -23,6 +23,19 @@ type sshNCBridge struct {
 	client *ssh.Client
 	socket string
 	sudo   bool
+	slots  chan struct{}
+	done   chan struct{}
+	once   sync.Once
+}
+
+// Leave headroom below OpenSSH's default MaxSessions=10. The bridge limit
+// includes Docker's raw/hijacked connections, which bypass http.Transport.
+const sshNCMaxSessions = 8
+const sshNCDialTimeout = 15 * time.Second
+
+func newSSHNCBridge(client *ssh.Client, socket string, sudo bool) *sshNCBridge {
+	return &sshNCBridge{client: client, socket: socket, sudo: sudo,
+		slots: make(chan struct{}, sshNCMaxSessions), done: make(chan struct{})}
 }
 
 func dialSSHNC(ctx context.Context, cfg pluginConfig, password, socketPath string, sudo bool) (*sshNCBridge, error) {
@@ -70,7 +83,7 @@ func dialSSHNC(ctx context.Context, cfg pluginConfig, password, socketPath strin
 	if err != nil {
 		return nil, describeSSHFailure(err, cfg.SSHHost, addr, knownHostsPath)
 	}
-	return &sshNCBridge{client: client, socket: socketPath, sudo: sudo}, nil
+	return newSSHNCBridge(client, socketPath, sudo), nil
 }
 
 // hostKeyAlgoOrders 是握手时依次尝试的主机密钥算法优先级。
@@ -178,10 +191,98 @@ func (c *pipeConn) SetDeadline(time.Time) error      { return nil }
 func (c *pipeConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *pipeConn) SetWriteDeadline(time.Time) error { return nil }
 
-func (b *sshNCBridge) dial(_ context.Context) (net.Conn, error) {
-	session, err := b.client.NewSession()
+func (b *sshNCBridge) dial(ctx context.Context) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(ctx, sshNCDialTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case b.slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("Waiting for a Docker SSH session slot; close unused terminals or streams: %w", ctx.Err())
+	case <-b.done:
+		return nil, net.ErrClosed
+	}
+	var once sync.Once
+	release := func() { once.Do(func() { <-b.slots }) }
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ready := make(chan result)
+	// x/crypto NewSession and Start do not take a context. Keep their slot
+	// until they finish, even if the caller cancels, and close a late session.
+	// This bounds pending opens without interrupting other active sessions.
+	go func() {
+		conn, err := b.open(ctx, release)
+		if err != nil {
+			release()
+		}
+		select {
+		case ready <- result{conn, err}:
+			return
+		case <-ctx.Done():
+		case <-b.done:
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}()
+	select {
+	case result := <-ready:
+		return result.conn, result.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("Opening Docker SSH session: %w", ctx.Err())
+	case <-b.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (b *sshNCBridge) newSession(ctx context.Context) (*ssh.Session, error) {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		select {
+		case <-b.done:
+			return nil, net.ErrClosed
+		default:
+		}
+		session, err := b.client.NewSession()
+		if err == nil {
+			return session, nil
+		}
+		var rejected *ssh.OpenChannelError
+		if !errors.As(err, &rejected) || (rejected.Reason != ssh.ConnectionFailed && rejected.Reason != ssh.ResourceShortage) {
+			return nil, fmt.Errorf("Failed to open SSH session: %w", err)
+		}
+		if attempt == 3 {
+			return nil, fmt.Errorf("Failed to open SSH session after bounded retries; the server may have reached sshd MaxSessions. Close unused terminals/streams or check the server's session limit: %w", err)
+		}
+		// No nc command or Docker request has been sent at this point. Never
+		// retry Docker operations or rebuild SSH underneath active streams.
+		timer := time.NewTimer(time.Duration(1<<attempt) * 100 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-b.done:
+			timer.Stop()
+			return nil, net.ErrClosed
+		}
+	}
+}
+
+func (b *sshNCBridge) open(ctx context.Context, release func()) (net.Conn, error) {
+	session, err := b.newSession(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to open SSH session: %w", err)
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = session.Close()
+		return nil, err
 	}
 	stdin, err := session.StdinPipe()
 	if err != nil {
@@ -201,11 +302,15 @@ func (b *sshNCBridge) dial(_ context.Context) (net.Conn, error) {
 	done := make(chan struct{})
 	go func() {
 		_ = session.Wait()
+		release()
 		close(done)
 	}()
 	return &pipeConn{session: session, stdin: stdin, stdout: stdout, done: done}, nil
 }
 
 func (b *sshNCBridge) close() {
-	_ = b.client.Close()
+	b.once.Do(func() {
+		close(b.done)
+		_ = b.client.Close()
+	})
 }
