@@ -14,7 +14,15 @@ The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the
 - Example prompts: “列出正在运行的容器”, “分析这个容器退出的原因”, “这个卷被哪些容器使用？” and, after granting the relevant permissions, “重启测试容器，操作前让我确认” or “预览清理未使用的网络”. Interactive terminals and file writes remain workbench-only.
 - [AI/MCP 使用、权限与工具说明（中文）](docs/AI-MCP.md)
 
-## 0.3.0 — 2026-10-14
+## 0.3.1 — 2026-10-15
+
+- Merge PR #1 while preserving the 0.3.0 connection forms, AI/MCP permissions and destructive-operation checks.
+- Add an optional **Local (OS default socket)** connection: Windows uses `//./pipe/docker_engine`; macOS/Linux use `/var/run/docker.sock`. Use an explicit socket mode for custom paths.
+- Accept native Windows named-pipe paths alongside URL-style paths. Keep strict SSH host key verification and HTTP as the existing connection default.
+- Cover default socket selection, native pipe connections, changed SSH host keys and localized connection forms with regression checks; Linux CI exercises a real Docker daemon through the local socket.
+- [完整更新日志（中文）](CHANGELOG.md)
+
+### Previous 0.3.0 — 2026-10-14
 
 - Larger, centered Docker icon and updated descriptions for built-in AI / external MCP operations.
 - Today's workbench improvements include theme-aware Compose group rows, compact tables, clearable search, highlighted port shortcuts, YAML Compose editing, refreshed overview/monitoring, container file menus/previews and unified transfer tasks. Column resizing was removed following feedback.
@@ -178,7 +186,7 @@ It verifies the handshake, direct and tunnel-routed connections, the remote plai
 
 The container rename and image tag checks restore the original state in a `finally` block, and the file round-trip removes its temporary file. Prune checks only inspect candidates and verify rejection without a token; the smoke test never executes daemon-wide cleanup.
 
-On Windows x64, the package is `dist/io.dbx.docker-0.3.0-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
+On Windows x64, the package is `dist/io.dbx.docker-0.3.1-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
 
 To check form visibility, localization, required fields, secret storage and serialization against an upstream checkout:
 
@@ -188,7 +196,7 @@ node scripts/check-dbx-connection-contract.mjs ../dbx upstream/main
 
 The connection audit was checked against DBX 0.6.43 (`0db01f7f284ec6b0b090fe7369de7d05c37b25b0`). The script loads the real upstream evaluator and serializer without changing the DBX checkout.
 
-Version 0.3.0 completes the Windows verification and safety audit stage. The [GitHub Release](https://github.com/Ezreal-byte/dbx-docker-plugin/releases/tag/v0.3.0) supplies platform candidates; these remain unsigned until DBX Store review and signing.
+Version 0.3.1 adds local connection improvements on top of the 0.3.0 safety audit. The [GitHub Release](https://github.com/Ezreal-byte/dbx-docker-plugin/releases/tag/v0.3.1) supplies platform candidates; these remain unsigned until DBX Store review and signing.
 
 Publishing a GitHub Release triggers `.github/workflows/release.yml` to build separate native candidates for Windows, macOS, and Linux. Release assets and `release-candidates.json` are the inputs to a candidate PR in [`t8y2/dbx-store`](https://github.com/t8y2/dbx-store). The store signs approved bytes; this repository contains no signing key.
 

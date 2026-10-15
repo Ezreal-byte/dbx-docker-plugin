@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "io.dbx.docker",
   "name": "Docker",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "ezreal-byte",
   "description": "Manage Docker containers, images, volumes, networks and Compose, with built-in DBX AI and MCP tools for queries and permission-controlled operations.",
   "icon": "assets/plugin.svg",
