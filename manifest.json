@@ -46,11 +46,16 @@
         {
           "key": "protocol",
           "label": "Connection method",
+          "description": "Local (OS default) uses the Windows named pipe or /var/run/docker.sock on macOS/Linux. Select an explicit socket mode for a custom path.",
           "type": "select",
           "binding": "config",
           "default": "http",
           "required": true,
           "options": [
+            {
+              "label": "Local (OS default socket)",
+              "value": "local"
+            },
             {
               "label": "HTTP (TCP)",
               "value": "http"
@@ -327,7 +332,7 @@
           "type": "text",
           "binding": "config",
           "default": "//./pipe/docker_engine",
-          "description": "Windows only. Docker Desktop local pipe; no TCP port is required.",
+          "description": "Windows only. Accepts //./pipe/<name> or \\\\.\\pipe\\<name>; no TCP port is required.",
           "visible_when": {
             "field": "protocol",
             "one_of": [
@@ -407,7 +412,9 @@
             },
             "protocol": {
               "label": "连接方式",
+              "description": "本机（系统默认）使用 Windows 命名管道或 macOS/Linux 的 /var/run/docker.sock；自定义路径请选择对应的 Socket / 命名管道方式。",
               "options": {
+                "local": "本机（系统默认）",
                 "http": "HTTP (TCP)",
                 "https": "HTTPS (TCP + TLS)",
                 "unix": "Unix Socket（本机）",
@@ -476,7 +483,7 @@
             },
             "pipe_path": {
               "label": "命名管道路径",
-              "description": "仅 Windows：Docker Desktop 本地管道，无需开放 TCP 端口。"
+              "description": "仅 Windows：支持 //./pipe/<name> 或 \\\\.\\pipe\\<name> 写法，无需开放 TCP 端口。"
             }
           }
         },

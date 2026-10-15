@@ -12,7 +12,7 @@ const dataDir = await mkdtemp(join(tmpdir(), 'dbx-safety-check-'));
 const client = new Sidecar(resolve(process.argv[2]), dataDir);
 const windows = process.platform === 'win32';
 const docker = (...args) => execFileSync('docker', [...(windows ? ['--host', 'tcp://127.0.0.1:2375'] : []), ...args], { encoding: 'utf8' });
-const connection = { id: name, plugin_id: 'io.dbx.docker', host: '127.0.0.1', port: 2375, external_config: windows ? { protocol: 'http', api_version: 'auto' } : { protocol: 'unix', socket_path: '/var/run/docker.sock', api_version: 'auto' } };
+const connection = { id: name, plugin_id: 'io.dbx.docker', host: '127.0.0.1', port: 2375, external_config: windows ? { protocol: 'http', api_version: 'auto' } : { protocol: 'local', api_version: 'auto' } };
 const rpc = (method, args = {}) => client.request(method, { connectionId: name, ...args });
 const preview = (operation, args) => rpc('docker/mutation', { operation, arguments: args });
 const execute = (operation, args, token) => preview(operation, { ...args, previewToken: token });

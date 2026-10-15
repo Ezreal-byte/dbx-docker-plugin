@@ -93,13 +93,14 @@ Compose 替换已有容器还需要 `remove_container` 权限。只读预览工�
 
 | 场景 | 方式 / 路径 |
 | --- | --- |
+| 本机默认端点 | **本机（系统默认）**：Windows 使用 `//./pipe/docker_engine`，macOS/Linux 使用 `/var/run/docker.sock`，无需填写路径。 |
 | Windows Docker Desktop 本机 | **Windows 命名管道**，`//./pipe/docker_engine`；无需开放 2375。也可按 Docker context 使用 `//./pipe/dockerDesktopLinuxEngine`。 |
 | macOS Docker Desktop | **Unix Socket**，通常为 `~/.docker/run/docker.sock` 对应的绝对路径；用 `docker context inspect` 确认当前端点。 |
 | Linux Docker Engine | **Unix Socket**，通常为 `/var/run/docker.sock`；rootless 环境用对应用户的实际 socket 路径。 |
 | 远程 Docker Socket | **SSH（Unix Socket）**，填写 SSH 信息与远端 `/var/run/docker.sock`，宿主“隧道/代理”留空。 |
 | TCP / TLS | **HTTP/HTTPS**，使用实际 Docker 主机和端口，可复用 DBX 桌面隧道。 |
 
-不展开 `~`，Socket 路径使用绝对路径。Named Pipe 在非 Windows 平台明确拒绝。原有协议值和连接字段保持兼容。
+本机默认方式不读取 Docker context，也不使用隐藏的旧路径；如果默认端点不存在，请选择明确的 Unix Socket / Windows 命名管道方式并填写实际路径。不展开 `~`，Socket 路径使用绝对路径。Named Pipe 接受 `//./pipe/<name>` 与 `\\.\pipe\<name>` 两种写法，在非 Windows 平台明确拒绝。原有协议值和连接字段保持兼容，新连接仍默认使用 HTTP。
 
 桌面 AI 复用有效 runtime，保留逻辑 HTTP Host / TLS SNI。外部 MCP 的直接 TCP、HTTPS、Unix Socket、Named Pipe、插件 SSH 可冷启动；DBX 宿主隧道通过桌面 `/call-plugin-tool` 桥转发一次并复用已打开会话。没有有效会话时提示先打开工作台，绝不回退直连原始目标。
 

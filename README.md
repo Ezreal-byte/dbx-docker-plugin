@@ -66,6 +66,7 @@ The connection form only shows fields for the selected **Connection method**:
 
 | Method | Connection fields | DBX Tunnel / Proxy |
 | --- | --- | --- |
+| Local (OS default socket) | None: Windows uses `//./pipe/docker_engine`; macOS/Linux use `/var/run/docker.sock` | Leave empty |
 | HTTP | Docker host, port (usually 2375), insecure remote HTTP option | Supported |
 | HTTPS | Docker host, port (usually 2376), optional CA and client certificate/key | Supported |
 | Unix socket (local) | Local socket path | Leave empty |
@@ -74,6 +75,8 @@ The connection form only shows fields for the selected **Connection method**:
 | SSH (Unix socket, sudo) | Same SSH fields; remote `sudo -n nc -U` needs passwordless sudo | Leave empty; the plugin opens SSH itself |
 
 Connection name, API version, read-only and production settings remain available for all methods. Certificate and SSH key fields have desktop file pickers. Switching methods preserves saved values but hides unrelated fields. Existing connection keys and protocol values remain compatible.
+
+HTTP remains the default for new connections. **Local (OS default socket)** always uses the paths above; it does not read Docker contexts or reuse hidden custom paths. For Docker Desktop on macOS, rootless Docker or another custom endpoint, select the explicit **Unix socket** or **Windows Named Pipe** method and use the endpoint reported by `docker context inspect`. Windows pipe paths accept both `//./pipe/<name>` and `\\.\pipe\<name>`.
 
 For a remote daemon listening on `127.0.0.1:2375`, choose **HTTP**, enter that address, then add the SSH hop in **Tunnel / Proxy**. For a remote daemon with no TCP listener, choose **SSH (Unix socket)**, enter SSH credentials and `/var/run/docker.sock`, and leave **Tunnel / Proxy** empty.
 

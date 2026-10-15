@@ -1,8 +1,9 @@
-export type DockerProtocol = "http" | "https" | "unix" | "unix-over-nc" | "unix-over-nc-sudo";
+export type DockerProtocol = "local" | "http" | "https" | "unix" | "npipe" | "unix-over-nc" | "unix-over-nc-sudo";
 
 export interface DockerAdminConfig {
   protocol: DockerProtocol;
   socketPath?: string;
+  pipePath?: string;
   apiVersion?: "auto" | string;
   allowInsecureRemoteHttp?: boolean;
 }

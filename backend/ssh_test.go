@@ -150,6 +150,35 @@ func TestDialStillFailsOnUnknownHostKey(t *testing.T) {
 	}
 }
 
+func TestDialStillRejectsChangedHostKey(t *testing.T) {
+	addr, _ := startSSHServer(t)
+	_, otherPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSigner, err := ssh.NewSignerFromKey(otherPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownHostsPath := writeKnownHosts(t, addr, otherSigner.PublicKey())
+	callback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := dialWithHostKeyFallback(addr, pluginConfig{SSHUsername: "tester"}, nil, callback)
+	if err == nil {
+		client.Close()
+		t.Fatal("changed server identity must be rejected even after algorithm fallback")
+	}
+	if !isHostKeyError(err) {
+		t.Fatalf("expected host key failure, got %v", err)
+	}
+	described := describeSSHFailure(err, "127.0.0.1", addr, knownHostsPath)
+	if !strings.Contains(described.Error(), "does not match") || !strings.Contains(described.Error(), knownHostsPath) {
+		t.Fatalf("mismatch must identify the known_hosts file: %v", described)
+	}
+}
+
 func TestDescribeSSHFailureIsActionable(t *testing.T) {
 	sshHost := "192.168.31.2"
 	addr := sshHost + ":22"

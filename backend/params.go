@@ -57,8 +57,8 @@ type pluginConfig struct {
 func (c connectionPayload) config() pluginConfig {
 	cfg := pluginConfig{
 		Protocol:   "http",
-		SocketPath: "/var/run/docker.sock",
-		PipePath:   "//./pipe/docker_engine",
+		SocketPath: defaultSocketPath,
+		PipePath:   defaultPipePath,
 		APIVersion: "auto",
 		SSHPort:    22,
 	}
@@ -98,7 +98,7 @@ func (c connectionPayload) config() pluginConfig {
 	if v, ok := raw["is_production"].(bool); ok {
 		cfg.IsProduction = v
 	}
-	return cfg
+	return resolveLocalSocket(cfg)
 }
 
 // effectiveReadOnly 与 xxl-job 先例一致：内建 read_only 与插件自声明字段取或。

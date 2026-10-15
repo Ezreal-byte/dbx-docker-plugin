@@ -35,6 +35,7 @@ const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta
 const common = ['display_name', 'protocol', 'api_version', 'read_only', 'is_production']
 const ssh = ['ssh_host', 'ssh_port', 'ssh_username', 'ssh_private_key_path', 'ssh_password', 'ssh_known_hosts_path', 'socket_path']
 const expected = {
+  local: [...common],
   http: [...common, 'host', 'port', 'allow_insecure_remote_http'],
   https: [...common, 'host', 'port', 'ca_cert_path', 'client_cert_path', 'client_key_path'],
   unix: [...common, 'socket_path'],
@@ -46,6 +47,7 @@ for (const locale of ['en', 'zh-CN']) {
   const registry = new frontend.FrontendPluginRegistry([{ manifest, compatibility: { compatible: true, errors: [] } }], locale)
   const provider = registry.listConnectionProviders()[0].contribution
   const defaults = frontend.pluginConnectionFormValues(provider)
+  assert.equal(defaults.protocol, 'http', 'keep the existing connection default')
   for (const [protocol, expectedFields] of Object.entries(expected)) {
     const values = { ...defaults, protocol, ssh_host: 'ssh.example.com', ssh_username: 'docker', ssh_password: 'fixture-secret' }
     const read = (key) => values[key]
@@ -53,7 +55,7 @@ for (const locale of ['en', 'zh-CN']) {
     const visible = provider.fields.filter((field) => conditions.pluginFieldIsVisible(field, read, resolve))
     assert.deepEqual(visible.map((field) => field.key).sort(), [...expectedFields].sort(), `${locale}/${protocol}: visibility`)
     const required = visible.filter((field) => conditions.pluginFieldIsRequired(field, read)).map((field) => field.key)
-    const wantRequired = ['protocol', ...(protocol === 'npipe' ? ['pipe_path'] : protocol.startsWith('unix') ? ['socket_path'] : ['host', 'port']), ...(protocol.startsWith('unix-over') ? ['ssh_host', 'ssh_username'] : [])]
+    const wantRequired = ['protocol', ...(protocol === 'local' ? [] : protocol === 'npipe' ? ['pipe_path'] : protocol.startsWith('unix') ? ['socket_path'] : ['host', 'port']), ...(protocol.startsWith('unix-over') ? ['ssh_host', 'ssh_username'] : [])]
     assert.deepEqual(required.sort(), wantRequired.sort(), `${locale}/${protocol}: required fields`)
     const saved = frontend.buildPluginConnectionConfig(manifest.id, provider, values)
     assert(saved.port > 0 && saved.port <= 65535, 'DBX validates the bound port even when hidden')

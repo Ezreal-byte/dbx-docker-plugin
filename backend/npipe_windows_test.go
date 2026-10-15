@@ -36,6 +36,13 @@ func TestNamedPipeConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	dc.close()
+	// Both native Windows and URL-style spellings must reach the same pipe.
+	c.ExternalConfig["pipe_path"] = `\\.\pipe\` + name
+	dc, err = connect(ctx, c, runtimeEndpoint{})
+	if err != nil {
+		t.Fatal("native Windows pipe spelling:", err)
+	}
+	dc.close()
 	for _, path := range []string{"//server/pipe/docker_engine", "//./pipe/../other", "//./pipe/", "//./pipe/a\\b"} {
 		c.ExternalConfig["pipe_path"] = path
 		if err := validateConfig(c, c.config(), runtimeEndpoint{}); err == nil {
