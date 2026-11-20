@@ -371,7 +371,11 @@ func writeComposeSource(ctx context.Context, sess *session, project composeProje
 	file := project.Files[0]
 	if sess.client.ssh != nil {
 		// A fresh sibling plus rename prevents partial writes; refuse symlinks.
-		script := "set -eu; test -f " + shellQuote(file) + "; test ! -L " + shellQuote(file) + "; tmp=$(mktemp " + shellQuote(file+".dbx-XXXXXX") + "); trap 'rm -f -- \"$tmp\"' EXIT; cat > \"$tmp\"; chmod --reference=" + shellQuote(file) + " \"$tmp\"; mv -f -- \"$tmp\" " + shellQuote(file)
+		script := "set -eu; test -f " + shellQuote(file) + "; test ! -L " + shellQuote(file) + "; tmp=$(mktemp " + shellQuote(file+".dbx-XXXXXX") + "); trap 'rm -f -- \"$tmp\"' EXIT; cat > \"$tmp\"; "
+		if sess.client.ssh.sudo {
+			script += "chown --reference=" + shellQuote(file) + " \"$tmp\"; "
+		}
+		script += "chmod --reference=" + shellQuote(file) + " \"$tmp\"; mv -f -- \"$tmp\" " + shellQuote(file)
 		_, err := hostCommand(ctx, sess, project.Directory, []string{"sh", "-c", script}, content, 4096)
 		return err
 	}
