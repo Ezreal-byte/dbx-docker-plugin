@@ -52,6 +52,8 @@ import CodeEditor from './components/CodeEditor.vue';
 import ContainerPorts from './components/ContainerPorts.vue';
 import ContainerOverview from './components/ContainerOverview.vue';
 import ComposeManager from './components/ComposeManager.vue';
+import ComposePreview from './components/ComposePreview.vue';
+import { actionLabel, type ComposeReview } from './composeProjects';
 import { composeFromInspects } from './compose';
 import { local, recommendations, mutationPreview, mutationExecute, type MutationPreview, type Task } from './automation';
 import { invoke } from './bridge';
@@ -71,6 +73,11 @@ watch(logWrap, value => { try { localStorage.setItem('dbx-docker-log-wrap', Stri
 async function openComposePage(project?: string) {
   await closeDetail(); composePage.value = true; await nextTick();
   if (project) await composeManager.value?.open(project);
+}
+async function openComposeContainer(id: string) {
+  if (composeManager.value?.dirty && !(await requestConfirmation(local('放弃未保存的 Compose 修改？', 'Discard unsaved Compose changes?')))) return;
+  const container = containers.value.find(item => item.id === id);
+  if (container) { composePage.value = false; await openDetail(container); }
 }
 function openClone(container: DockerContainer) { cloneSource.value = container; cloneName.value = containerName(container) + '-copy'; cloneOpen.value = true; }
 async function cloneContainer() {
@@ -1803,12 +1810,14 @@ watch([connectionId, resource, selectedRowKey, selectedContainerId, locale], () 
 onUnmounted(() => { const plugin = getPlugin(); void plugin.ai?.clearRecommendations().catch(() => {}); });
 
 const mutationDialog = ref(false), pendingPreview = ref<MutationPreview>(), pendingOperation = ref('');
+const composePreviewReady = ref(false);
+const composeReview = computed(() => pendingOperation.value === 'compose_project' ? pendingPreview.value?.preview as ComposeReview | undefined : undefined);
 let resolveMutation: ((confirmed: boolean) => void) | undefined;
 const mutationLabel = computed(() => ({
   remove_container: local('删除容器', 'Remove container'), remove_image: local('删除镜像', 'Remove image'),
   remove_network: local('删除网络', 'Remove network'), remove_volume: local('删除卷', 'Remove volume'),
   apply_compose: local('部署 / 替换 Compose', 'Deploy / replace Compose'), tag_image: local('更改镜像标签', 'Change image tag'),
-  clone_container: local('复制容器配置', 'Copy container configuration'), compose_project: local('Compose 项目管理', 'Manage Compose project'),
+  clone_container: local('复制容器配置', 'Copy container configuration'), compose_project: composeReview.value?.action ? actionLabel(composeReview.value.action, locale.value === 'zh-CN') : local('编排操作预览', 'Compose preview'),
   untag_image: local('删除镜像标签', 'Remove image tag'), delete_file: local('删除容器文件', 'Delete container file'),
 }[pendingOperation.value] || local('操作预览', 'Operation preview')));
 async function previewAndConfirm(operation: string, args: Record<string, unknown>) {
@@ -1816,7 +1825,7 @@ async function previewAndConfirm(operation: string, args: Record<string, unknown
   const id = connectionId.value;
   const preview = await mutationPreview(id, operation, args);
   if (resolveMutation || workbenchClosed || id !== connectionId.value) return;
-  pendingPreview.value = preview; pendingOperation.value = operation; mutationDialog.value = true;
+  composePreviewReady.value = false; pendingPreview.value = preview; pendingOperation.value = operation; mutationDialog.value = true;
   return (await new Promise<boolean>(resolve => { resolveMutation = resolve; })) && !isReadOnly.value && id === connectionId.value ? preview : undefined;
 }
 function settleMutation(confirmed: boolean) { mutationDialog.value = false; resolveMutation?.(confirmed); resolveMutation = undefined; }
@@ -1887,7 +1896,7 @@ onUnmounted(() => settleConfirmation(false));
 
     <Dialog :open="cloneOpen" @update:open="cloneOpen = $event"><div class="dlg-header"><div class="dlg-title">{{ local('复制容器配置', 'Copy container configuration') }}</div></div><label class="docker-field"><span>{{ local('副本名称', 'Copy name') }}</span><input v-model="cloneName" class="input" :disabled="submitting" /></label><p class="hint-text">{{ local('复制镜像和运行配置，副本默认停止。挂载数据、容器内新增文件、发布端口、Compose 标签和高权限设置不复制。创建前会展示预览。', 'Copies the image and configuration into a stopped container. Mounted data, writable-layer files, published ports, Compose labels and elevated privileges are excluded. Review the preview before creating.') }}</p><div class="dlg-footer"><button class="btn btn-outline" :disabled="submitting" @click="cloneOpen = false">{{ t('cancel') }}</button><button class="btn btn-primary" :disabled="submitting || !cloneName.trim() || isReadOnly" @click="cloneContainer">{{ local('预览并创建', 'Preview and create') }}</button></div></Dialog>
     <main v-if="!error" class="main-area">
-      <ComposeManager v-if="composePage" :key="connectionId" ref="composeManager" :connection-id="connectionId" :read-only="isReadOnly" :confirm="previewAndConfirm" :discard="() => requestConfirmation(local('放弃未保存的修改？', 'Discard unsaved changes?'))" @fallback="project => openComposeEditor(project, true)" @create="openComposeEditor()" @changed="loadContainers" />
+      <ComposeManager v-if="composePage" :key="connectionId" ref="composeManager" :connection-id="connectionId" :containers="containers" :read-only="isReadOnly" :confirm="previewAndConfirm" :discard="() => requestConfirmation(local('放弃未保存的修改？', 'Discard unsaved changes?'))" @fallback="project => openComposeEditor(project, true)" @create="openComposeEditor()" @changed="loadContainers" @container="openComposeContainer" />
       <template v-else-if="selectedContainer">
         <div class="detail-header">
           <button class="btn btn-ghost btn-sm" @click="closeDetail"><Icon name="arrow-left" />{{ t('backToContainers') }}</button>
@@ -2278,8 +2287,8 @@ onUnmounted(() => settleConfirmation(false));
       <div class="dlg-header"><div class="dlg-title">{{ local('操作预览', 'Operation preview') }} · {{ mutationLabel }}</div><div class="dlg-desc">{{ connectionName || connectionId }} · {{ pendingPreview?.isProduction ? local('生产环境', 'Production') : '' }}</div></div>
       <p class="hint-text">{{ local('仅执行预览中的范围；五分钟内有效，目标变化后需重新预览。', 'Execution is bound to this preview for five minutes; changed targets require a new preview.') }}</p>
       <p v-if="pendingOperation === 'delete_file'" class="error-banner">{{ local('文件删除无法撤销；删除文件夹会删除其中全部内容。', 'File deletion cannot be undone; deleting a folder removes all its contents.') }}</p>
-      <div class="automation-scroll"><JsonTree :value="pendingPreview?.preview" :initial-expanded-depth="2" /></div>
-      <div class="dlg-footer"><button class="btn btn-outline" @click="settleMutation(false)">{{ t('cancel') }}</button><button class="btn btn-danger" @click="settleMutation(true)">{{ local('确认执行', 'Confirm execution') }}</button></div>
+      <div class="automation-scroll"><ComposePreview v-if="pendingOperation === 'compose_project' && composeReview" :review="composeReview" @validity="composePreviewReady = $event" /><JsonTree v-else :value="pendingPreview?.preview" :initial-expanded-depth="2" /></div>
+      <div class="dlg-footer"><button class="btn btn-outline" @click="settleMutation(false)">{{ t('cancel') }}</button><button class="btn" :class="pendingOperation === 'compose_project' && !['stop','down'].includes(composeReview?.action || '') ? 'btn-primary' : 'btn-danger'" :disabled="pendingOperation === 'compose_project' && !composePreviewReady" @click="settleMutation(true)">{{ pendingOperation === 'compose_project' ? local('确认', 'Confirm') + actionLabel(composeReview!.action, locale === 'zh-CN') : local('确认执行', 'Confirm execution') }}</button></div>
     </Dialog>
     <ResourceDetails v-model:open="resourceDetailsOpen" :connection-id="connectionId" :kind="resourceDetailsKind" :resource-id="resourceDetailsId" :read-only="isReadOnly" @changed="loadResource(resource)" />
     <FileContextMenu :open="fileMenu.open" :x="fileMenu.x" :y="fileMenu.y" :entry="fileMenu.entry" :read-only="isReadOnly" @close="fileMenu.open = false" @action="fileMenuAction" />
@@ -2293,7 +2302,7 @@ onUnmounted(() => settleConfirmation(false));
     </Dialog>
     <Dialog :open="createContainerOpen" content-class="dlg-wide" @update:open="createContainerOpen = $event">
       <div class="dlg-header">
-        <div class="dlg-title">{{ composeEditingProject ? t('editCompose') : t('createContainer') }}</div>
+        <div class="dlg-title">{{ createMode === 'compose' ? (composeEditingProject ? local('导入项目快照', 'Import project snapshot') : local('新建编排', 'New Compose project')) : t('createContainer') }}</div>
         <div class="dlg-desc">{{ t('createContainerDescription') }}</div>
       </div>
       <div class="filter-group">

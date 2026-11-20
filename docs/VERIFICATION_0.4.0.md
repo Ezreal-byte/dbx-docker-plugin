@@ -18,11 +18,18 @@ Copy pins the original image, retains ordinary configuration, removes Compose la
 
 ## Checks
 
-- `npm test`: 29 existing frontend tests; `npm run build`: Vue/TypeScript and production bundle.
+- `npm test`: 32 frontend tests, including project states, filtering and source paths; `npm run build`: Vue/TypeScript and production bundle.
 - `go -C backend test -race ./...`, `go -C backend vet ./...`, `go -C backend/sdk test ./...`.
 - Source/discovery tests: original text, registry retention, conflicting metadata, file size limits, atomic replacement, path validation. Copy tests: fresh state binding, replay rejection, no secret data in preview, source unchanged, independent copied settings.
 - Real SSH protocol fixtures: host argument quoting, cancellation, shared session quota; existing SSH `nc` concurrency tests retained.
 - `npm run package`: Windows x64 package plus artifact metadata; manifest/backend versions match 0.4.0.
+- Compose snapshot regression ignores asynchronous sandbox/endpoint teardown after stop, while container identity, lifecycle timestamps, runtime configuration, network membership, aliases and static IP changes still invalidate the preview.
+
+## Compose visual and interaction verification
+
+The rebuilt Compose UI reuses the existing toolbar, compact resource table, detail header/tabs, overview cards, dialogs and CodeMirror editor. Container copying and log wrapping retain their accepted implementation. See [visual QA and screenshots](../design-qa.md).
+
+Headless Chromium exercised the production bundle and real framed Go sidecar against a uniquely named, disposable two-service Docker project. Verified light/dark and 980×720 layouts, search/empty state, dirty-navigation cancellation, readable two-service deployment review, exact project-name removal confirmation, actual stop/start with inline task results, missing-file retry/recovery, navigation to existing container details and backend read-only disabling edits/deployment. No browser page errors. Deployment/removal were previewed and cancelled in this browser run; full execution of those actions is covered by the separate live regression below. This is browser automation with a minimal DBX bridge, not a claim of manual DBX desktop acceptance.
 
 ## Live Docker
 

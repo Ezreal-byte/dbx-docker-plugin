@@ -42,6 +42,8 @@ try {
   let source=await rpc('docker/composeSource',{project});assert.equal(source.files[0].content,content);assert.equal(source.editable,true);
   const args={project,action:'deploy',content:content.replace("'360'","'480'"),sourceHash:source.sourceHash};
   const plan=await preview('compose_project',args);assert.equal(await readFile(file,'utf8'),content);
+  assert.equal(plan.preview.services.length,2);assert.equal(plan.preview.containers.length,2);
+  assert(!JSON.stringify(plan).includes('UNUSED='),'review must not expose environment contents');
   await writeFile(file,content+'# changed outside plugin\n');
   await assert.rejects(execute('compose_project',args,plan.previewToken),/source changed|state changed|target.*changed/i);
   await writeFile(file,content);

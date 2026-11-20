@@ -366,17 +366,57 @@ func (p *plugin) composeProjectSnapshot(sess *session, args map[string]any) (any
 		return nil, err
 	}
 	states := []any{}
+	containers := []map[string]any{}
+	existingServices := map[string]bool{}
 	for _, item := range items {
 		if item.Labels[labelProject] == project.Name {
-			state, e := p.mutationSnapshot(sess, toolDefinition{Name: "remove_container"}, map[string]any{"containerId": item.ID})
+			service := item.Labels[labelService]
+			existingServices[service] = true
+			name := item.ID
+			if len(item.Names) > 0 {
+				name = strings.TrimPrefix(item.Names[0], "/")
+			}
+			containers = append(containers, map[string]any{"name": name, "service": service, "image": item.Image, "state": item.State})
+			inspected, e := sess.client.cli.ContainerInspect(ctx, item.ID)
 			if e != nil {
 				return nil, e
 			}
-			states = append(states, state)
+			if inspected.State == nil {
+				return nil, errors.New("Container state is unavailable")
+			}
+			states = append(states, composeContainerSnapshot(inspected))
 		}
 	}
 	sort.Slice(states, func(i, j int) bool { return hashValue(states[i]) < hashValue(states[j]) })
-	return map[string]any{"project": project, "sourceHash": hashValue(files), "renderedHash": hashValue(config), "containers": states}, nil
+	sort.Slice(containers, func(i, j int) bool { return fmt.Sprint(containers[i]["name"]) < fmt.Sprint(containers[j]["name"]) })
+	services := []map[string]any{}
+	if configured, ok := config["services"].(map[string]any); ok {
+		for name, value := range configured {
+			image := ""
+			if fields, ok := value.(map[string]any); ok {
+				image, _ = fields["image"].(string)
+			}
+			services = append(services, map[string]any{"name": name, "image": image, "exists": existingServices[name]})
+		}
+	}
+	sort.Slice(services, func(i, j int) bool { return services[i]["name"].(string) < services[j]["name"].(string) })
+	return map[string]any{"project": project, "sourceHash": hashValue(files), "renderedHash": hashValue(config), "containers": states, "reviewContainers": containers, "services": services}, nil
+}
+
+func composeContainerSnapshot(inspected container.InspectResponse) map[string]any {
+	// Engine tears down sandbox IDs/endpoints asynchronously after stop. Bind
+	// configuration and lifecycle, excluding only ephemeral network runtime data.
+	networks := map[string]any{}
+	if inspected.NetworkSettings != nil {
+		for name, endpoint := range inspected.NetworkSettings.Networks {
+			if endpoint == nil {
+				networks[name] = nil
+				continue
+			}
+			networks[name] = map[string]any{"ipam": endpoint.IPAMConfig, "links": endpoint.Links, "aliases": endpoint.Aliases, "driverOpts": endpoint.DriverOpts, "gatewayPriority": endpoint.GwPriority}
+		}
+	}
+	return map[string]any{"id": inspected.ID, "name": inspected.Name, "image": inspected.Image, "config": inspected.Config, "hostConfig": inspected.HostConfig, "mounts": inspected.Mounts, "networks": networks, "state": inspected.State.Status, "startedAt": inspected.State.StartedAt, "finishedAt": inspected.State.FinishedAt, "restartCount": inspected.RestartCount}
 }
 
 func writeComposeSource(ctx context.Context, sess *session, project composeProject, content string) error {

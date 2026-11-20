@@ -144,7 +144,9 @@ func (p *plugin) prepareMutation(sess *session, t toolDefinition, args map[strin
 	}
 	display := sanitizeToolData(snapshot)
 	if t.Name == "compose_project" {
-		display = map[string]any{"project": args["project"], "action": args["action"], "sourceWillBeSaved": args["content"] != nil, "dataVolumesRetained": true, "warning": "Compose runs on the Docker host. Deployment can replace containers. Failures may leave partial changes; inspect before retrying."}
+		state := snapshot.(map[string]any)
+		project := state["project"].(composeProject)
+		display = map[string]any{"project": args["project"], "action": args["action"], "directory": project.Directory, "files": project.Files, "services": state["services"], "containers": state["reviewContainers"], "sourceWillBeSaved": args["content"] != nil, "dataVolumesRetained": true}
 	}
 	if t.Name == "clone_container" {
 		display = map[string]any{"source": args["containerId"], "name": args["name"], "starts": false, "warning": "Copies configuration and image only. Published ports, mounted data, Compose labels and elevated privileges are excluded; container writable-layer data is not copied."}
