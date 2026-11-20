@@ -14,6 +14,12 @@ func findMutation(name string) (toolDefinition, bool) {
 	var method string
 	var input schema
 	switch name {
+	case "clone_container":
+		method = "docker/cloneContainer"
+		input = object(schema{"containerId": str(256), "name": str(128)}, "containerId", "name")
+	case "compose_project":
+		method = "docker/composeProjectAction"
+		input = object(schema{"project": str(128), "action": enum("deploy", "start", "stop", "restart", "down"), "content": str(composeSourceLimit), "sourceHash": str(128)}, "project", "action")
 	case "delete_file":
 		method = "docker/fileOperation"
 		input = object(schema{"containerId": str(256), "path": str(4096), "operation": enum("delete")}, "containerId", "path", "operation")
@@ -27,11 +33,15 @@ func findMutation(name string) (toolDefinition, bool) {
 		return toolDefinition{}, false
 	}
 	input["properties"].(schema)["previewToken"] = str(48)
-	return toolDefinition{Name: name, Method: method, Group: "delete", Destructive: true, InputSchema: input}, true
+	return toolDefinition{Name: name, Method: method, Group: "delete", Destructive: true, Long: name == "compose_project", InputSchema: input}, true
 }
 
 func workbenchMutation(method string, raw json.RawMessage) string {
 	switch method {
+	case "docker/cloneContainer":
+		return "clone_container"
+	case "docker/composeProjectAction":
+		return "compose_project"
 	case "docker/removeContainer":
 		return "remove_container"
 	case "docker/removeImage":

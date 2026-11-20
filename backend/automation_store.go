@@ -43,11 +43,12 @@ type auditRecord struct {
 	Outcome      string    `json:"outcome"`
 }
 type automationState struct {
-	Version  int                         `json:"version"`
-	Policies map[string]automationPolicy `json:"policies"`
-	Previews map[string]previewRecord    `json:"previews"`
-	Tasks    map[string]taskRecord       `json:"tasks"`
-	Audit    []auditRecord               `json:"audit"`
+	Compose  map[string]map[string]composeProject `json:"composeProjects,omitempty"`
+	Version  int                                  `json:"version"`
+	Policies map[string]automationPolicy          `json:"policies"`
+	Previews map[string]previewRecord             `json:"previews"`
+	Tasks    map[string]taskRecord                `json:"tasks"`
+	Audit    []auditRecord                        `json:"audit"`
 }
 
 // The lock covers read/modify/replace across desktop and external MCP processes.

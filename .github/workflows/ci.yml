@@ -47,6 +47,9 @@ jobs:
           go -C backend build -o ../dist/safety-sidecar .
           docker pull alpine:3.22
           node scripts/check-mutation-safety.mjs dist/safety-sidecar alpine:3.22
+      - name: Compose project and container copy regression
+        if: runner.os == 'Linux'
+        run: node scripts/check-release-040.mjs dist/safety-sidecar alpine:3.22
       - name: Package Windows candidate
         if: runner.os == 'Windows'
         run: npm run package

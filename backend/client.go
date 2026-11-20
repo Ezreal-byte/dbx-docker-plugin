@@ -17,6 +17,7 @@ import (
 
 // dockerClient 包装一条到 Docker Engine 的连接及其配置。
 type dockerClient struct {
+	ssh     *sshNCBridge
 	cli     *client.Client
 	conn    connectionPayload
 	cfg     pluginConfig
@@ -157,6 +158,7 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 
 	opts := []client.Opt{}
 	var closer func()
+	var sshBridge *sshNCBridge
 
 	// 自定义拨号集合：隧道与 nc 桥都会改写拨号目标，最终用统一的
 	// WithHTTPClient(Transport{DialContext}) 组装。官方 SDK 的 Dialer()（hijack
@@ -214,6 +216,7 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 			return nil, err
 		}
 		closer = bridge.close
+		sshBridge = bridge
 		dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return bridge.dial(ctx)
 		}
@@ -247,7 +250,7 @@ func connect(ctx context.Context, c connectionPayload, runtime runtimeEndpoint) 
 		return nil, err
 	}
 
-	dc := &dockerClient{cli: cli, conn: c, cfg: cfg, closer: closer, runtime: runtime}
+	dc := &dockerClient{cli: cli, conn: c, cfg: cfg, closer: closer, runtime: runtime, ssh: sshBridge}
 
 	// 分支行为：连接建立即 ping 验证。
 	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)

@@ -15,7 +15,7 @@ import (
 
 const (
 	pluginID      = "io.dbx.docker"
-	pluginVersion = "0.3.1"
+	pluginVersion = "0.4.0"
 )
 
 // session 是一条已建立的 Docker 连接（按 connectionId 缓存，disconnect 关闭）。
@@ -136,6 +136,14 @@ func (p *plugin) dispatch(method string, v params, raw json.RawMessage, emitter 
 
 func (p *plugin) dispatchSession(method string, sess *session, raw json.RawMessage, emitter *sdk.Emitter) (any, error) {
 	switch method {
+	case "docker/composeProjects":
+		return p.composeProjects(sess)
+	case "docker/composeSource":
+		return p.composeSource(sess, raw)
+	case "docker/composeProjectAction":
+		return p.composeProjectAction(sess, raw)
+	case "docker/cloneContainer":
+		return p.cloneContainer(sess, raw)
 	case "docker/mutation":
 		return p.mutationRPC(sess, raw)
 	case "docker/events":

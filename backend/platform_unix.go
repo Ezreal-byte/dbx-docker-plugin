@@ -5,7 +5,10 @@ package main
 import (
 	"golang.org/x/sys/unix"
 	"os"
+	"os/exec"
 )
+
+func hideHostCommand(cmd *exec.Cmd) {}
 
 func namedPipeSupported() bool                { return false }
 func tryFileLock(f *os.File) bool             { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) == nil }

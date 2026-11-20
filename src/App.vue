@@ -51,6 +51,7 @@ import FileContextMenu from './components/FileContextMenu.vue';
 import CodeEditor from './components/CodeEditor.vue';
 import ContainerPorts from './components/ContainerPorts.vue';
 import ContainerOverview from './components/ContainerOverview.vue';
+import ComposeManager from './components/ComposeManager.vue';
 import { composeFromInspects } from './compose';
 import { local, recommendations, mutationPreview, mutationExecute, type MutationPreview, type Task } from './automation';
 import { invoke } from './bridge';
@@ -62,6 +63,26 @@ type TrendPoint = DockerContainerStats;
 type SortDirection = 'asc' | 'desc';
 
 const resource = ref<ResourceKind>('containers');
+const composePage = ref(false), composeManager = ref<InstanceType<typeof ComposeManager>>();
+const cloneOpen = ref(false), cloneSource = ref<DockerContainer>(), cloneName = ref('');
+const logWrap = ref(true);
+try { logWrap.value = localStorage.getItem('dbx-docker-log-wrap') !== 'false'; } catch { /* optional preference storage */ }
+watch(logWrap, value => { try { localStorage.setItem('dbx-docker-log-wrap', String(value)); } catch { /* storage unavailable */ } });
+async function openComposePage(project?: string) {
+  await closeDetail(); composePage.value = true; await nextTick();
+  if (project) await composeManager.value?.open(project);
+}
+function openClone(container: DockerContainer) { cloneSource.value = container; cloneName.value = containerName(container) + '-copy'; cloneOpen.value = true; }
+async function cloneContainer() {
+  if (!cloneSource.value || submitting.value || isReadOnly.value) return;
+  submitting.value = true;
+  try {
+    const args = { containerId: cloneSource.value.id, name: cloneName.value.trim() };
+    const preview = await previewAndConfirm('clone_container', args); if (!preview) return;
+    await mutationExecute(connectionId.value, 'clone_container', args, preview);
+    cloneOpen.value = false; await loadContainers(); toast(local('副本已创建，处于停止状态', 'Copy created in stopped state'), 3000);
+  } catch (e) { toast(String(e), 5000); } finally { submitting.value = false; }
+}
 const filter = ref<ContainerFilter>('all');
 const loading = ref(false);
 const error = ref('');
@@ -769,6 +790,8 @@ async function loadResource(kind = resource.value) {
 }
 
 async function selectResource(kind: ResourceKind) {
+  if (composePage.value && composeManager.value?.dirty && !(await requestConfirmation(local('放弃未保存的 Compose 修改？', 'Discard unsaved Compose changes?')))) return;
+  composePage.value = false;
   await closeDetail();
   resource.value = kind;
   selectedRowKey.value = '';
@@ -973,7 +996,8 @@ async function openCreateContainer() {
   createContainerOpen.value = true;
 }
 
-async function openComposeEditor(project = '') {
+async function openComposeEditor(project = '', snapshot = false) {
+  if (project && !snapshot) { await openComposePage(project); return; }
   createMode.value = 'compose';
   composeEditingProject.value = project;
   composeDraft.value.projectName = project;
@@ -1010,6 +1034,15 @@ async function applyCompose() {
   } finally {
     submitting.value = false;
   }
+}
+
+async function importComposeFile(event: Event) {
+  const input = event.target as HTMLInputElement, file = input.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 128 * 1024) throw Error(local('YAML 文件不能超过 128 KiB', 'YAML file exceeds 128 KiB'));
+    composeDraft.value.content = new TextDecoder('utf-8', {fatal: true}).decode(await file.arrayBuffer());
+  } catch (e) { toast(String(e), 4000); } finally { input.value = ''; }
 }
 
 async function pullImage() {
@@ -1775,6 +1808,7 @@ const mutationLabel = computed(() => ({
   remove_container: local('删除容器', 'Remove container'), remove_image: local('删除镜像', 'Remove image'),
   remove_network: local('删除网络', 'Remove network'), remove_volume: local('删除卷', 'Remove volume'),
   apply_compose: local('部署 / 替换 Compose', 'Deploy / replace Compose'), tag_image: local('更改镜像标签', 'Change image tag'),
+  clone_container: local('复制容器配置', 'Copy container configuration'), compose_project: local('Compose 项目管理', 'Manage Compose project'),
   untag_image: local('删除镜像标签', 'Remove image tag'), delete_file: local('删除容器文件', 'Delete container file'),
 }[pendingOperation.value] || local('操作预览', 'Operation preview')));
 async function previewAndConfirm(operation: string, args: Record<string, unknown>) {
@@ -1796,9 +1830,10 @@ onUnmounted(() => settleConfirmation(false));
   <div class="workbench">
     <header class="docker-header">
       <nav class="header-tabs">
-        <button v-for="kind in ['containers', 'images', 'volumes', 'networks'] as ResourceKind[]" :key="kind" class="docker-main-tab" :class="{ active: resource === kind }" @click="selectResource(kind)">
+        <button v-for="kind in ['containers', 'images', 'volumes', 'networks'] as ResourceKind[]" :key="kind" class="docker-main-tab" :class="{ active: !composePage && resource === kind }" @click="selectResource(kind)">
           {{ t(kind) }}
         </button>
+        <button class="docker-main-tab" :class="{ active: composePage }" @click="openComposePage()">Compose</button>
       </nav>
       <div class="header-actions">
         <AutomationPanel :connection-id="connectionId" :name="connectionName" :read-only="isReadOnly" :production="isProduction" />
@@ -1850,8 +1885,10 @@ onUnmounted(() => settleConfirmation(false));
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 
-    <main v-else class="main-area">
-      <template v-if="selectedContainer">
+    <Dialog :open="cloneOpen" @update:open="cloneOpen = $event"><div class="dlg-header"><div class="dlg-title">{{ local('复制容器配置', 'Copy container configuration') }}</div></div><label class="docker-field"><span>{{ local('副本名称', 'Copy name') }}</span><input v-model="cloneName" class="input" :disabled="submitting" /></label><p class="hint-text">{{ local('复制镜像和运行配置，副本默认停止。挂载数据、容器内新增文件、发布端口、Compose 标签和高权限设置不复制。创建前会展示预览。', 'Copies the image and configuration into a stopped container. Mounted data, writable-layer files, published ports, Compose labels and elevated privileges are excluded. Review the preview before creating.') }}</p><div class="dlg-footer"><button class="btn btn-outline" :disabled="submitting" @click="cloneOpen = false">{{ t('cancel') }}</button><button class="btn btn-primary" :disabled="submitting || !cloneName.trim() || isReadOnly" @click="cloneContainer">{{ local('预览并创建', 'Preview and create') }}</button></div></Dialog>
+    <main v-if="!error" class="main-area">
+      <ComposeManager v-if="composePage" :key="connectionId" ref="composeManager" :connection-id="connectionId" :read-only="isReadOnly" :confirm="previewAndConfirm" :discard="() => requestConfirmation(local('放弃未保存的修改？', 'Discard unsaved changes?'))" @fallback="project => openComposeEditor(project, true)" @create="openComposeEditor()" @changed="loadContainers" />
+      <template v-else-if="selectedContainer">
         <div class="detail-header">
           <button class="btn btn-ghost btn-sm" @click="closeDetail"><Icon name="arrow-left" />{{ t('backToContainers') }}</button>
           <span class="detail-divider" />
@@ -1877,11 +1914,12 @@ onUnmounted(() => settleConfirmation(false));
               </div>
               <button class="btn btn-outline btn-sm" @click="toggleLogPause"><Icon :name="logPaused ? 'play' : 'pause'" />{{ logPaused ? t('resume') : t('pause') }}</button>
               <label class="check-label"><input v-model="logAutoFollow" type="checkbox" @change="logAutoFollow && scrollLogsToBottom()" />{{ t('autoFollowLogs') }}</label>
+              <label class="check-label"><input v-model="logWrap" type="checkbox" />{{ local('自动换行', 'Wrap lines') }}</label>
               <button class="btn btn-outline btn-sm" @click="clearLogs">{{ t('clear') }}</button>
               <span v-if="pendingLogText" class="warn-text">{{ t('bufferedLogs') }}</span>
             </div>
             <div v-if="logError" class="error-text">{{ logError }}</div>
-            <pre ref="logOutput" class="log-output" @scroll.passive="handleLogScroll">{{ visibleLogs || t('waitingForLogs') }}</pre>
+            <pre ref="logOutput" class="log-output" :class="{ 'log-wrap': logWrap }" @scroll.passive="handleLogScroll">{{ visibleLogs || t('waitingForLogs') }}</pre>
           </div>
 
           <div v-else-if="detailTab === 'monitoring'" class="monitoring-pane">
@@ -2076,19 +2114,20 @@ onUnmounted(() => settleConfirmation(false));
                   <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
                   <td>
                     <div class="row-actions">
-                      <button v-if="isRunning(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('pause')" @click="runAction(container, 'pause')"
+                      <button v-if="isRunning(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('pause')" @click="runAction(container, 'pause')"
                         ><Icon v-if="actionInFlight[container.id] === 'pause'" name="loader-circle" class="spin" /><Icon v-else name="pause" /></button
-                      ><button v-if="isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('resume')" @click="runAction(container, 'unpause')"
+                      ><button v-if="isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('resume')" @click="runAction(container, 'unpause')"
                         ><Icon v-if="actionInFlight[container.id] === 'unpause'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
-                      ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('restart')" @click="runAction(container, 'restart')"
+                      ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('restart')" @click="runAction(container, 'restart')"
                         ><Icon v-if="actionInFlight[container.id] === 'restart'" name="loader-circle" class="spin" /><Icon v-else name="rotate-cw" /></button
-                      ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('stop')" @click="runAction(container, 'stop')"
+                      ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('stop')" @click="runAction(container, 'stop')"
                         ><Icon v-if="actionInFlight[container.id] === 'stop'" name="loader-circle" class="spin" /><Icon v-else name="square" /></button
-                      ><button v-if="!isRunning(container) && !isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('start')" @click="runAction(container, 'start')"
+                      ><button v-if="!isRunning(container) && !isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('start')" @click="runAction(container, 'start')"
                         ><Icon v-if="actionInFlight[container.id] === 'start'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
-                      ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
+                      ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
                         ><Icon v-if="actionInFlight[container.id] === 'remove'" name="loader-circle" class="spin" /><Icon v-else name="trash-2" /></button
                       ><button v-if="!isReadOnly" class="icon-btn icon-sm" :title="t('rename')" @click="openRename(container)"><Icon name="pencil" /></button
+                      ><button v-if="!isReadOnly" class="btn btn-ghost btn-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" @click="openClone(container)"><Icon name="copy" />{{ local('复制', 'Duplicate') }}</button
                       ><button class="btn btn-ghost btn-sm" @click="openDetail(container)">{{ t('details') }}</button>
                     </div>
                   </td>
@@ -2119,19 +2158,20 @@ onUnmounted(() => settleConfirmation(false));
                 <td><span class="docker-status" :class="isRunning(container) ? 'running' : isPaused(container) ? 'paused' : 'stopped'">{{ containerStatusLabel(container) }}</span></td>
                 <td>
                   <div class="row-actions">
-                    <button v-if="isRunning(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('pause')" @click="runAction(container, 'pause')"
+                    <button v-if="isRunning(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('pause')" @click="runAction(container, 'pause')"
                       ><Icon v-if="actionInFlight[container.id] === 'pause'" name="loader-circle" class="spin" /><Icon v-else name="pause" /></button
-                    ><button v-if="isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('resume')" @click="runAction(container, 'unpause')"
+                    ><button v-if="isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('resume')" @click="runAction(container, 'unpause')"
                       ><Icon v-if="actionInFlight[container.id] === 'unpause'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
-                    ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('restart')" @click="runAction(container, 'restart')"
+                    ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('restart')" @click="runAction(container, 'restart')"
                       ><Icon v-if="actionInFlight[container.id] === 'restart'" name="loader-circle" class="spin" /><Icon v-else name="rotate-cw" /></button
-                    ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('stop')" @click="runAction(container, 'stop')"
+                    ><button v-if="isRunning(container) || isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('stop')" @click="runAction(container, 'stop')"
                       ><Icon v-if="actionInFlight[container.id] === 'stop'" name="loader-circle" class="spin" /><Icon v-else name="square" /></button
-                    ><button v-if="!isRunning(container) && !isPaused(container)" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('start')" @click="runAction(container, 'start')"
+                    ><button v-if="!isRunning(container) && !isPaused(container)" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('start')" @click="runAction(container, 'start')"
                       ><Icon v-if="actionInFlight[container.id] === 'start'" name="loader-circle" class="spin" /><Icon v-else name="play" /></button
-                    ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="!!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
+                    ><button v-if="!isRunning(container) && !isPaused(container) && !isReadOnly" class="icon-btn icon-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" :title="t('remove')" @click="removeContainer(container)"
                       ><Icon v-if="actionInFlight[container.id] === 'remove'" name="loader-circle" class="spin" /><Icon v-else name="trash-2" /></button
                     ><button v-if="!isReadOnly" class="icon-btn icon-sm" :title="t('rename')" @click="openRename(container)"><Icon name="pencil" /></button
+                    ><button v-if="!isReadOnly" class="btn btn-ghost btn-sm" :disabled="isReadOnly || !!actionInFlight[container.id]" @click="openClone(container)"><Icon name="copy" />{{ local('复制', 'Duplicate') }}</button
                     ><button class="btn btn-ghost btn-sm" @click="openDetail(container)">{{ t('details') }}</button>
                   </div>
                 </td>
@@ -2286,6 +2326,7 @@ onUnmounted(() => settleConfirmation(false));
         <label class="check-label"><input v-model="createContainerDraft.start" type="checkbox" />{{ t('startAfterCreate') }}</label>
       </div>
       <div v-else class="stack">
+        <label class="docker-field"><span>{{ local('导入本地 YAML（也可直接粘贴）', 'Import local YAML (or paste below)') }}</span><input type="file" accept=".yml,.yaml,text/yaml" :disabled="submitting || composeLoading" @change="importComposeFile" /></label>
         <LoadingSkeleton v-if="composeLoading" :rows="8" :columns="1" />
         <p v-if="composeError" class="error-text" role="alert">{{ composeError }}</p>
         <label class="docker-field"><span>{{ t('composeProject') }}</span><input v-model="composeDraft.projectName" class="input" :disabled="!!composeEditingProject" placeholder="my-project" /></label>

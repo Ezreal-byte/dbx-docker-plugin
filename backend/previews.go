@@ -19,6 +19,14 @@ func (p *plugin) mutationSnapshot(sess *session, t toolDefinition, args map[stri
 	ctx, cancel := context.WithTimeout(sess.context(), 60*time.Second)
 	defer cancel()
 	switch t.Name {
+	case "compose_project":
+		return p.composeProjectSnapshot(sess, args)
+	case "clone_container":
+		c, err := sess.client.cli.ContainerInspect(ctx, args["containerId"].(string))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": c.ID, "name": c.Name, "image": c.Image, "config": c.Config, "hostConfig": c.HostConfig}, nil
 	case "delete_file", "upload_file":
 		return fileMutationSnapshot(sess, t.Name, args)
 	case "untag_image":
@@ -135,6 +143,12 @@ func (p *plugin) prepareMutation(sess *session, t toolDefinition, args map[strin
 		return nil, err
 	}
 	display := sanitizeToolData(snapshot)
+	if t.Name == "compose_project" {
+		display = map[string]any{"project": args["project"], "action": args["action"], "sourceWillBeSaved": args["content"] != nil, "dataVolumesRetained": true, "warning": "Compose runs on the Docker host. Deployment can replace containers. Failures may leave partial changes; inspect before retrying."}
+	}
+	if t.Name == "clone_container" {
+		display = map[string]any{"source": args["containerId"], "name": args["name"], "starts": false, "warning": "Copies configuration and image only. Published ports, mounted data, Compose labels and elevated privileges are excluded; container writable-layer data is not copied."}
+	}
 	if t.Name == "apply_compose" {
 		display, err = p.resourceOperation("docker/composePreview", sess, jsonBytes(args))
 		if err != nil {
@@ -238,6 +252,9 @@ func (p *plugin) executeMutation(sess *session, t toolDefinition, args map[strin
 		}
 		// Use immutable IDs even when a caller supplied a mutable container name.
 		if t.Name == "remove_container" {
+			args["containerId"] = current.(map[string]any)["id"]
+		}
+		if t.Name == "clone_container" {
 			args["containerId"] = current.(map[string]any)["id"]
 		}
 		if t.Name == "remove_image" {

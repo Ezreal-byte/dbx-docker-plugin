@@ -24,6 +24,7 @@ import (
 // A real SSH transport with an sshd-style session quota. Each exec channel
 // serves a small Docker HTTP fixture instead of executing a local nc process.
 type limitedSSHServer struct {
+	execHook  func(string, ssh.Channel, <-chan *ssh.Request) bool
 	cfg       pluginConfig
 	active    atomic.Int32
 	peak      atomic.Int32
@@ -36,6 +37,10 @@ type limitedSSHServer struct {
 }
 
 func startLimitedSSHServer(t *testing.T, limit, rejectFor int32) *limitedSSHServer {
+	return startLimitedSSHServerWithHook(t, limit, rejectFor, nil)
+}
+
+func startLimitedSSHServerWithHook(t *testing.T, limit, rejectFor int32, hook func(string, ssh.Channel, <-chan *ssh.Request) bool) *limitedSSHServer {
 	t.Helper()
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -53,7 +58,7 @@ func startLimitedSSHServer(t *testing.T, limit, rejectFor int32) *limitedSSHServ
 	}
 	host, portString, _ := net.SplitHostPort(listener.Addr().String())
 	port, _ := strconv.Atoi(portString)
-	f := &limitedSSHServer{limit: limit, rejectFor: rejectFor, cfg: pluginConfig{
+	f := &limitedSSHServer{execHook: hook, limit: limit, rejectFor: rejectFor, cfg: pluginConfig{
 		SSHHost: host, SSHPort: port, SSHUsername: "fixture",
 		SSHKnownHostsPath: writeKnownHosts(t, listener.Addr().String(), signer.PublicKey()),
 	}}
@@ -103,6 +108,12 @@ func (f *limitedSSHServer) serve(channel ssh.Channel, requests <-chan *ssh.Reque
 		return
 	}
 	var exec struct{ Command string }
+	if request.Type == "exec" && ssh.Unmarshal(request.Payload, &exec) == nil && f.execHook != nil {
+		_ = request.Reply(true, nil)
+		if f.execHook(exec.Command, channel, requests) {
+			return
+		}
+	}
 	if request.Type != "exec" || ssh.Unmarshal(request.Payload, &exec) != nil ||
 		(exec.Command != "nc -U '/var/run/docker.sock'" && exec.Command != "sudo -n -- nc -U '/var/run/docker.sock'") {
 		_ = request.Reply(false, nil)

@@ -11,7 +11,7 @@ import (
 func TestPublicDestructiveRPCsCannotBypassPreview(t *testing.T) {
 	p := testAutomationPlugin(t)
 	p.sessions["guard"] = &session{conn: connectionPayload{ID: "guard"}}
-	for _, method := range []string{"docker/removeContainer", "docker/removeImage", "docker/removeVolume", "docker/removeNetwork", "docker/prune", "docker/applyCompose", "docker/tagImage", "docker/untagImage", "docker/disconnectNetwork", "docker/fileOperation"} {
+	for _, method := range []string{"docker/cloneContainer", "docker/composeProjectAction", "docker/removeContainer", "docker/removeImage", "docker/removeVolume", "docker/removeNetwork", "docker/prune", "docker/applyCompose", "docker/tagImage", "docker/untagImage", "docker/disconnectNetwork", "docker/fileOperation"} {
 		t.Run(method, func(t *testing.T) {
 			_, err := p.dispatch(method, params{ConnectionID: "guard"}, jsonBytes(map[string]any{"operation": "delete"}), nil)
 			if err == nil || !strings.Contains(err.Error(), "confirmed preview") {
@@ -23,7 +23,7 @@ func TestPublicDestructiveRPCsCannotBypassPreview(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "confirmed") {
 		t.Fatalf("upload lacks backend gate: %v", err)
 	}
-	for _, name := range []string{"delete_file", "upload_file", "untag_image"} {
+	for _, name := range []string{"clone_container", "compose_project", "delete_file", "upload_file", "untag_image"} {
 		if _, ok := findTool(name); ok {
 			t.Fatalf("workbench-only operation exposed to AI: %s", name)
 		}

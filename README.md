@@ -14,7 +14,15 @@ The UI follows the DBX interface language. It reads `dbxPlugin.locale` after the
 - Example prompts: “列出正在运行的容器”, “分析这个容器退出的原因”, “这个卷被哪些容器使用？” and, after granting the relevant permissions, “重启测试容器，操作前让我确认” or “预览清理未使用的网络”. Interactive terminals and file writes remain workbench-only.
 - [AI/MCP 使用、权限与工具说明（中文）](docs/AI-MCP.md)
 
-## 0.3.1 — 2026-10-15
+## 0.4.0 — 2026-11-21
+
+- **Compose management ([#3](https://github.com/Ezreal-byte/dbx-docker-plugin/issues/3))**: the Compose page discovers original working directories and files from project labels. Local and SSH socket connections can read original YAML, preserve comments/variables, and use host Docker Compose v2+ to resolve `.env`, dependencies, networks and volumes. Preview before deploying, starting, stopping, restarting or removing a project. Removal retains data volumes; remembered paths permit redeployment.
+- A single source file can be edited and atomically saved before deployment. Multiple files are shown read-only and deployed in their original order. Edit include/extends configurations on the host, then deploy. Remote TCP/DBX tunnels have no host filesystem access: the UI explains this and offers explicit YAML/snapshot import through the existing supported subset. This does not reconstruct missing original files.
+- **Container shortcuts ([#4](https://github.com/Ezreal-byte/dbx-docker-plugin/issues/4))**: standalone and grouped rows provide lifecycle actions, rename, remove and Duplicate. Copies pin the source image and remain stopped. Mounted data, writable-layer changes, published ports, Compose identity and elevated privileges are excluded. Review the backend preview first.
+- **Log wrapping ([#5](https://github.com/Ezreal-byte/dbx-docker-plugin/issues/5))**: choose wrapped lines or horizontal scrolling; the preference is remembered locally and does not alter log data.
+- Native Compose and copying are workbench actions. AI/MCP cannot read host files or invoke host Compose commands. Existing AI/MCP tools retain their scoped authorization. See [verification and operational details](docs/VERIFICATION_0.4.0.md).
+
+### Previous 0.3.1 — 2026-10-15
 
 - Merge PR #1 while preserving the 0.3.0 connection forms, AI/MCP permissions and destructive-operation checks.
 - Add an optional **Local (OS default socket)** connection: Windows uses `//./pipe/docker_engine`; macOS/Linux use `/var/run/docker.sock`. Use an explicit socket mode for custom paths.
@@ -195,7 +203,7 @@ It verifies the handshake, direct and tunnel-routed connections, the remote plai
 
 The container rename and image tag checks restore the original state in a `finally` block, and the file round-trip removes its temporary file. Prune checks only inspect candidates and verify rejection without a token; the smoke test never executes daemon-wide cleanup.
 
-On Windows x64, the package is `dist/io.dbx.docker-0.3.1-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
+On Windows x64, the package is `dist/io.dbx.docker-0.4.0-windows-x64.dbxp`. It is an **unsigned review candidate**. To test it in DBX, enable **Allow unsigned development package** in Plugin Center, then install the `.dbxp` locally. Normal marketplace installation requires DBX Store review and signing.
 
 To check form visibility, localization, required fields, secret storage and serialization against an upstream checkout:
 

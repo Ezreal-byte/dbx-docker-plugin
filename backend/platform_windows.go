@@ -5,7 +5,11 @@ package main
 import (
 	"golang.org/x/sys/windows"
 	"os"
+	"os/exec"
+	"syscall"
 )
+
+func hideHostCommand(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} }
 
 func namedPipeSupported() bool { return true }
 func tryFileLock(f *os.File) bool {
