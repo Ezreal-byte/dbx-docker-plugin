@@ -25,6 +25,7 @@ type composeProject struct {
 	Name       string   `json:"name"`
 	Directory  string   `json:"directory"`
 	Files      []string `json:"files"`
+	EnvFiles   []string `json:"envFiles"`
 	Containers int      `json:"containers"`
 	Running    int      `json:"running"`
 	Conflict   bool     `json:"conflict"`
@@ -64,9 +65,14 @@ func (p *plugin) composeProjects(sess *session) ([]composeProject, error) {
 				project.Files = append(project.Files, strings.TrimSpace(file))
 			}
 		}
+		for _, file := range strings.Split(c.Labels["com.docker.compose.project.environment_file"], ",") {
+			if strings.TrimSpace(file) != "" {
+				project.EnvFiles = append(project.EnvFiles, strings.TrimSpace(file))
+			}
+		}
 		previous := projects[name]
 		if seen[name] {
-			project.Conflict = previous.Conflict || project.Directory != previous.Directory || hashValue(project.Files) != hashValue(previous.Files)
+			project.Conflict = previous.Conflict || project.Directory != previous.Directory || hashValue(project.Files) != hashValue(previous.Files) || hashValue(project.EnvFiles) != hashValue(previous.EnvFiles)
 			project.Containers, project.Running = previous.Containers, previous.Running
 		}
 		project.Containers++
@@ -113,7 +119,10 @@ func (p *plugin) findComposeProject(sess *session, name string) (composeProject,
 			if len(project.Files) == 0 || len(project.Files) > 8 || !validComposeHostPath(project.Directory, sess.client.ssh != nil) {
 				return project, errors.New("Original Compose paths are unavailable; import YAML explicitly instead")
 			}
-			for _, f := range project.Files {
+			if len(project.EnvFiles) > 8 {
+				return project, errors.New("Too many Compose environment files")
+			}
+			for _, f := range append(append([]string{}, project.Files...), project.EnvFiles...) {
 				if !validComposeHostPath(f, sess.client.ssh != nil) {
 					return project, errors.New("Compose file paths must be absolute host paths")
 				}
@@ -172,6 +181,9 @@ func composeCLIArgs(sess *session, project composeProject, stdin bool) []string 
 		}
 	}
 	args = append(args, "compose", "--ansi", "never", "--project-name", project.Name, "--project-directory", project.Directory)
+	for _, file := range project.EnvFiles {
+		args = append(args, "--env-file", file)
+	}
 	if stdin {
 		return append(args, "--file", "-")
 	}
